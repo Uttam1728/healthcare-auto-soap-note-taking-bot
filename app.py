@@ -198,6 +198,322 @@ def analyze_conversation(transcript_text):
             "error": f"Analysis failed: {str(e)}"
         }
 
+def analyze_conversation_with_sources(transcript_text):
+    """Enhanced analysis that maps each SOAP component to its source transcript excerpts"""
+    try:
+        # Check if transcript is too small
+        if len(transcript_text.strip()) < 10:
+            return {
+                "error": "Transcript too short for analysis",
+                "reason": "The recorded conversation is too brief to generate a meaningful medical analysis.",
+                "speaker_analysis": {
+                    "doctor_segments": [],
+                    "patient_segments": [],
+                    "doctor_percentage": 0,
+                    "patient_percentage": 0
+                },
+                "conversation_segments": [],
+                "medical_topics": [],
+                "summary": "Insufficient conversation content for analysis",
+                "soap_note_with_sources": {
+                    "subjective": {
+                        "content": "Insufficient data - conversation too brief",
+                        "sources": [],
+                        "confidence": 0
+                    },
+                    "objective": {
+                        "content": "Not documented - no conversation recorded",
+                        "sources": [],
+                        "confidence": 0
+                    },
+                    "assessment": {
+                        "content": "Cannot assess - inadequate information",
+                        "sources": [],
+                        "confidence": 0
+                    },
+                    "plan": {
+                        "content": "Unable to formulate plan",
+                        "sources": [],
+                        "confidence": 0
+                    }
+                }
+            }
+        
+        # Split transcript into numbered segments for easier reference
+        transcript_segments = []
+        sentences = transcript_text.split('. ')
+        for i, sentence in enumerate(sentences):
+            if sentence.strip():
+                transcript_segments.append({
+                    "id": i + 1,
+                    "text": sentence.strip() + ('.' if not sentence.endswith('.') else ''),
+                    "start_pos": transcript_text.find(sentence),
+                    "end_pos": transcript_text.find(sentence) + len(sentence)
+                })
+        
+        prompt = f"""
+        You are a medical AI assistant analyzing a doctor-patient conversation. Your task is to:
+        1. Analyze speaker distribution and conversation flow
+        2. Extract key medical topics and conversation segments  
+        3. Generate a professional SOAP note with source citations
+        4. For EACH statement in the SOAP note, identify the specific transcript segments that support it
+        5. Provide confidence scores for each component
+
+        TRANSCRIPT (with segment numbers for reference):
+        {chr(10).join([f"[{seg['id']}] {seg['text']}" for seg in transcript_segments])}
+
+        CRITICAL REQUIREMENTS for your response:
+        - Include ALL analysis components: speaker analysis, medical topics, conversation segments, summary, AND SOAP note with sources
+        - For every statement in the SOAP note, you MUST cite the specific segment numbers [1], [2], etc. that support it
+        - If multiple segments support a statement, list all relevant segments
+        - Provide confidence scores (0-100) for each SOAP section
+        - Use professional medical language
+        - If information is missing, explicitly state "Not documented" and cite supporting segments if available
+
+        Respond with VALID JSON in this exact structure:
+        {{
+            "speaker_analysis": {{
+                "doctor_segments": ["segment1", "segment2"],
+                "patient_segments": ["segment1", "segment2"],
+                "doctor_percentage": 60,
+                "patient_percentage": 40
+            }},
+            "conversation_segments": [
+                {{
+                    "type": "greeting",
+                    "content": "Hello, how are you feeling today?",
+                    "speaker": "doctor"
+                }},
+                {{
+                    "type": "chief_complaint",
+                    "content": "I have chest pain",
+                    "speaker": "patient"
+                }}
+            ],
+            "medical_topics": ["symptom1", "symptom2", "diagnosis"],
+            "summary": "Brief summary of the consultation",
+            "soap_note_with_sources": {{
+                "subjective": {{
+                    "content": "Patient reports chest pain that started 2 hours ago, described as sharp and radiating to left arm",
+                    "sources": [
+                        {{
+                            "segment_ids": [3, 5, 7],
+                            "excerpt": "I have this sharp pain in my chest... started about 2 hours ago... goes down my left arm",
+                            "reasoning": "Patient directly describing chief complaint and associated symptoms"
+                        }}
+                    ],
+                    "confidence": 85,
+                    "sub_components": {{
+                        "chief_complaint": {{
+                            "content": "Chest pain",
+                            "sources": [{{
+                                "segment_ids": [3],
+                                "excerpt": "I have this sharp pain in my chest",
+                                "reasoning": "Direct patient statement of primary concern"
+                            }}],
+                            "confidence": 95
+                        }},
+                        "history_present_illness": {{
+                            "content": "Sharp chest pain started 2 hours ago, radiating to left arm",
+                            "sources": [{{
+                                "segment_ids": [3, 5, 7],
+                                "excerpt": "sharp pain... started about 2 hours ago... goes down my left arm",
+                                "reasoning": "Patient describing timeline and characteristics"
+                            }}],
+                            "confidence": 90
+                        }}
+                    }}
+                }},
+                "objective": {{
+                    "content": "Vital signs: BP 140/90, HR 88, temp 98.6F. Physical exam reveals tenderness over precordium",
+                    "sources": [
+                        {{
+                            "segment_ids": [12, 15],
+                            "excerpt": "blood pressure is 140 over 90... heart rate 88... temperature normal... tender right here over the heart",
+                            "reasoning": "Doctor documenting vital signs and physical findings"
+                        }}
+                    ],
+                    "confidence": 80,
+                    "sub_components": {{
+                        "vital_signs": {{
+                            "content": "BP 140/90, HR 88, temp 98.6F",
+                            "sources": [{{
+                                "segment_ids": [12],
+                                "excerpt": "blood pressure is 140 over 90, heart rate 88, temperature normal",
+                                "reasoning": "Doctor stating measured vital signs"
+                            }}],
+                            "confidence": 95
+                        }},
+                        "physical_exam": {{
+                            "content": "Tenderness over precordium",
+                            "sources": [{{
+                                "segment_ids": [15],
+                                "excerpt": "tender right here over the heart",
+                                "reasoning": "Doctor documenting physical examination findings"
+                            }}],
+                            "confidence": 85
+                        }}
+                    }}
+                }},
+                "assessment": {{
+                    "content": "Likely acute coronary syndrome based on chest pain characteristics and risk factors",
+                    "sources": [
+                        {{
+                            "segment_ids": [18, 20],
+                            "excerpt": "given your symptoms and the nature of this pain... could be related to your heart",
+                            "reasoning": "Doctor's clinical reasoning and diagnostic thinking"
+                        }}
+                    ],
+                    "confidence": 75,
+                    "sub_components": {{
+                        "primary_diagnosis": {{
+                            "content": "Acute coronary syndrome",
+                            "sources": [{{
+                                "segment_ids": [20],
+                                "excerpt": "could be related to your heart",
+                                "reasoning": "Doctor indicating cardiac etiology"
+                            }}],
+                            "confidence": 70
+                        }}
+                    }}
+                }},
+                "plan": {{
+                    "content": "EKG and cardiac enzymes ordered; aspirin 325mg given; cardiology consultation; follow-up in 24 hours",
+                    "sources": [
+                        {{
+                            "segment_ids": [22, 24, 26],
+                            "excerpt": "let's get an EKG... check some blood work... give you some aspirin... see cardiology... come back tomorrow",
+                            "reasoning": "Doctor outlining specific treatment and follow-up plans"
+                        }}
+                    ],
+                    "confidence": 90,
+                    "sub_components": {{
+                        "diagnostic_tests": {{
+                            "content": "EKG and cardiac enzymes ordered",
+                            "sources": [{{
+                                "segment_ids": [22, 24],
+                                "excerpt": "let's get an EKG... check some blood work",
+                                "reasoning": "Doctor ordering specific diagnostic tests"
+                            }}],
+                            "confidence": 95
+                        }},
+                        "medications": {{
+                            "content": "Aspirin 325mg given",
+                            "sources": [{{
+                                "segment_ids": [24],
+                                "excerpt": "give you some aspirin",
+                                "reasoning": "Doctor prescribing/administering medication"
+                            }}],
+                            "confidence": 85
+                        }},
+                        "follow_up": {{
+                            "content": "Cardiology consultation; follow-up in 24 hours",
+                            "sources": [{{
+                                "segment_ids": [26],
+                                "excerpt": "see cardiology... come back tomorrow",
+                                "reasoning": "Doctor arranging specialist consultation and follow-up"
+                            }}],
+                            "confidence": 90
+                        }}
+                    }}
+                }}
+            }},
+            "transcript_segments": {json.dumps(transcript_segments)},
+            "analysis_metadata": {{
+                "total_segments": {len(transcript_segments)},
+                "processing_timestamp": "{json.dumps(transcript_segments)}",
+                "overall_confidence": 85
+            }}
+        }}
+
+        IMPORTANT: 
+        - Every "content" field must have corresponding "sources" with specific segment_ids
+        - Segment_ids must reference the numbered segments from the transcript above
+        - Excerpts should be direct quotes (may be abbreviated with ...)
+        - Reasoning should explain why these segments support the clinical statement
+        - If no supporting evidence exists, use "Not documented" and empty sources array
+        - Confidence scores should reflect the strength of evidence in the transcript
+        """
+
+        message = anthropic_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=2500,  # Increased for detailed source mapping
+            temperature=0.1,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+        
+        response_text = message.content[0].text
+        
+        # Parse the enhanced response with source mapping
+        try:
+            # Try to parse as JSON
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                json_text = json_match.group().strip()
+                
+                # Clean the JSON
+                cleaned_json = json_text
+                cleaned_json = re.sub(r'(?<!\\)\n', '\\n', cleaned_json)
+                cleaned_json = re.sub(r'(?<!\\)\t', '\\t', cleaned_json)
+                cleaned_json = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', cleaned_json)
+                
+                analysis = json.loads(cleaned_json)
+                
+                # Add the original transcript segments for reference
+                analysis['transcript_segments'] = transcript_segments
+                
+                print(f"Successfully parsed enhanced analysis with sources")
+                return analysis
+                
+        except Exception as e:
+            print(f"Error parsing enhanced analysis: {e}")
+            # Fallback to original analysis and convert to enhanced format
+            original_analysis = analyze_conversation(transcript_text)
+            return convert_to_enhanced_format(original_analysis, transcript_segments)
+            
+    except Exception as e:
+        print(f"Error in enhanced analysis: {e}")
+        # Fallback to original analysis and convert to enhanced format
+        original_analysis = analyze_conversation(transcript_text)
+        return convert_to_enhanced_format(original_analysis, transcript_segments)
+
+def convert_to_enhanced_format(original_analysis, transcript_segments):
+    """Convert original analysis format to enhanced format with source mapping"""
+    if "error" in original_analysis:
+        return original_analysis
+    
+    # Convert standard SOAP note to enhanced format
+    enhanced_soap = {}
+    if "soap_note" in original_analysis:
+        for section_key, content in original_analysis["soap_note"].items():
+            enhanced_soap[section_key] = {
+                "content": content,
+                "sources": [],  # No sources available from original analysis
+                "confidence": 80  # Default confidence
+            }
+    
+    # Return enhanced format with all components
+    enhanced_analysis = {
+        "speaker_analysis": original_analysis.get("speaker_analysis", {
+            "doctor_segments": [],
+            "patient_segments": [],
+            "doctor_percentage": 50,
+            "patient_percentage": 50
+        }),
+        "conversation_segments": original_analysis.get("conversation_segments", []),
+        "medical_topics": original_analysis.get("medical_topics", []),
+        "summary": original_analysis.get("summary", "Analysis completed"),
+        "soap_note_with_sources": enhanced_soap,
+        "transcript_segments": transcript_segments
+    }
+    
+    return enhanced_analysis
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -398,7 +714,7 @@ def handle_stop_transcription():
         print(f"Analyzing transcript: {full_transcript[:100]}...")
         
         try:
-            analysis = analyze_conversation(full_transcript)
+            analysis = analyze_conversation_with_sources(full_transcript)
             conversation_analysis = analysis
             
             # Send analysis to frontend
@@ -453,7 +769,7 @@ def handle_retry_analysis():
         print(f"Retrying analysis for transcript: {full_transcript[:100]}...")
         
         try:
-            analysis = analyze_conversation(full_transcript)
+            analysis = analyze_conversation_with_sources(full_transcript)
             conversation_analysis = analysis
             
             # Send analysis to frontend
@@ -477,14 +793,14 @@ def handle_retry_analysis():
 
 @socketio.on('test_analysis')
 def handle_test_analysis():
-    """Test function with known good JSON"""
-    print('Testing analysis with sample data...')
+    """Test function with enhanced source mapping"""
+    print('Testing analysis with sample data including source mapping...')
     
-    # Create a sample analysis to test the frontend
+    # Create a sample analysis with source mapping to test the frontend
     test_analysis = {
         "speaker_analysis": {
             "doctor_segments": ["How can I help you today?", "I'll prescribe some medication"],
-            "patient_segments": ["I have a headache", "Thank you doctor"],
+            "patient_segments": ["I have a headache for 3 days", "Thank you doctor"],
             "doctor_percentage": 60,
             "patient_percentage": 40
         },
@@ -496,22 +812,149 @@ def handle_test_analysis():
             },
             {
                 "type": "chief_complaint",
-                "content": "I have a headache",
+                "content": "I have a headache for 3 days",
                 "speaker": "patient"
             }
         ],
-        "medical_topics": ["headache", "pain management"],
-        "summary": "Patient presents with headache complaint. Doctor provides treatment recommendation.",
-        "soap_note": {
-            "subjective": "Patient reports headache symptoms.",
-            "objective": "No physical examination documented.",
-            "assessment": "Tension headache likely.",
-            "plan": "Prescribe pain medication and recommend rest."
+        "medical_topics": ["headache", "pain management", "tension headache"],
+        "summary": "Patient presents with 3-day history of headache. Doctor provides treatment recommendation.",
+        "transcript_segments": [
+            {"id": 1, "text": "How can I help you today?", "start_pos": 0, "end_pos": 26},
+            {"id": 2, "text": "I have a headache for 3 days now.", "start_pos": 27, "end_pos": 61},
+            {"id": 3, "text": "It's a throbbing pain on the right side.", "start_pos": 62, "end_pos": 103},
+            {"id": 4, "text": "Let me check your blood pressure.", "start_pos": 104, "end_pos": 138},
+            {"id": 5, "text": "Your blood pressure is normal at 120/80.", "start_pos": 139, "end_pos": 180},
+            {"id": 6, "text": "This sounds like a tension headache.", "start_pos": 181, "end_pos": 218},
+            {"id": 7, "text": "I'll prescribe some ibuprofen and recommend rest.", "start_pos": 219, "end_pos": 269}
+        ],
+        "soap_note_with_sources": {
+            "subjective": {
+                "content": "Patient reports 3-day history of headache with throbbing pain on the right side.",
+                "confidence": 95,
+                "sources": [
+                    {
+                        "segment_ids": [2, 3],
+                        "excerpt": "I have a headache for 3 days now. It's a throbbing pain on the right side.",
+                        "reasoning": "Patient directly describing chief complaint with specific duration and characteristics"
+                    }
+                ],
+                "sub_components": {
+                    "chief_complaint": {
+                        "content": "Headache",
+                        "confidence": 100,
+                        "sources": [
+                            {
+                                "segment_ids": [2],
+                                "excerpt": "I have a headache for 3 days now",
+                                "reasoning": "Patient's primary concern stated directly"
+                            }
+                        ]
+                    },
+                    "history_present_illness": {
+                        "content": "3-day duration, throbbing quality, right-sided location",
+                        "confidence": 90,
+                        "sources": [
+                            {
+                                "segment_ids": [2, 3],
+                                "excerpt": "for 3 days now... throbbing pain on the right side",
+                                "reasoning": "Patient describing temporal and qualitative characteristics"
+                            }
+                        ]
+                    }
+                }
+            },
+            "objective": {
+                "content": "Vital signs: Blood pressure 120/80 mmHg (normal). No other physical examination findings documented.",
+                "confidence": 80,
+                "sources": [
+                    {
+                        "segment_ids": [5],
+                        "excerpt": "Your blood pressure is normal at 120/80",
+                        "reasoning": "Doctor documenting vital signs measurement"
+                    }
+                ],
+                "sub_components": {
+                    "vital_signs": {
+                        "content": "BP 120/80 mmHg",
+                        "confidence": 95,
+                        "sources": [
+                            {
+                                "segment_ids": [5],
+                                "excerpt": "Your blood pressure is normal at 120/80",
+                                "reasoning": "Doctor stating measured blood pressure"
+                            }
+                        ]
+                    }
+                }
+            },
+            "assessment": {
+                "content": "Tension headache based on clinical presentation and symptom characteristics.",
+                "confidence": 85,
+                "sources": [
+                    {
+                        "segment_ids": [6],
+                        "excerpt": "This sounds like a tension headache",
+                        "reasoning": "Doctor's clinical assessment and diagnostic impression"
+                    }
+                ],
+                "sub_components": {
+                    "primary_diagnosis": {
+                        "content": "Tension headache",
+                        "confidence": 85,
+                        "sources": [
+                            {
+                                "segment_ids": [6],
+                                "excerpt": "This sounds like a tension headache",
+                                "reasoning": "Doctor's diagnostic conclusion"
+                            }
+                        ]
+                    }
+                }
+            },
+            "plan": {
+                "content": "Prescribe ibuprofen for pain relief and recommend rest for recovery.",
+                "confidence": 90,
+                "sources": [
+                    {
+                        "segment_ids": [7],
+                        "excerpt": "I'll prescribe some ibuprofen and recommend rest",
+                        "reasoning": "Doctor outlining treatment plan including medication and non-pharmacological management"
+                    }
+                ],
+                "sub_components": {
+                    "medications": {
+                        "content": "Ibuprofen as needed for pain",
+                        "confidence": 95,
+                        "sources": [
+                            {
+                                "segment_ids": [7],
+                                "excerpt": "I'll prescribe some ibuprofen",
+                                "reasoning": "Doctor prescribing specific medication"
+                            }
+                        ]
+                    },
+                    "recommendations": {
+                        "content": "Rest and relaxation",
+                        "confidence": 85,
+                        "sources": [
+                            {
+                                "segment_ids": [7],
+                                "excerpt": "recommend rest",
+                                "reasoning": "Doctor's non-pharmacological treatment recommendation"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        "analysis_metadata": {
+            "total_segments": 7,
+            "overall_confidence": 88
         }
     }
     
     emit('conversation_analysis', test_analysis)
-    emit('status', {'message': 'Test analysis complete!'})
+    emit('status', {'message': 'Test analysis with source mapping complete!'})
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0', port=5002, allow_unsafe_werkzeug=True) 
