@@ -124,6 +124,28 @@
             font-weight: 500;
             margin-bottom: 10px;
         }
+        
+        .final-text.low-confidence {
+            opacity: 0.8;
+            border-left: 3px solid #ffc107;
+            padding-left: 10px;
+        }
+        
+        .speaker-tag {
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-right: 8px;
+            display: inline-block;
+        }
+        
+        .speaker-tag.interim {
+            background: #ccc;
+            color: #666;
+        }
 
         .empty-state {
             color: #999;
@@ -445,7 +467,7 @@
         });
         
         socket.on('transcript', function(data) {
-            displayTranscript(data.text, data.is_final);
+            displayTranscript(data);
         });
         
         socket.on('conversation_analysis', function(data) {
@@ -470,7 +492,23 @@
             status.className = isError ? 'status error' : 'status';
         }
         
-        function displayTranscript(text, isFinal) {
+        function displayTranscript(data) {
+            // Handle both old format (text, isFinal) and new format (data object)
+            let text, isFinal, speaker, confidence, timestamp;
+            
+            if (typeof data === 'string') {
+                // Old format - just text and isFinal as separate params
+                text = data;
+                isFinal = arguments[1];
+            } else {
+                // New enhanced format
+                text = data.text;
+                isFinal = data.is_final;
+                speaker = data.speaker;
+                confidence = data.confidence;
+                timestamp = data.timestamp;
+            }
+            
             if (transcript.querySelector('.empty-state')) {
                 transcript.innerHTML = '';
             }
@@ -480,10 +518,31 @@
                 const interimElements = transcript.querySelectorAll('.interim-text');
                 interimElements.forEach(el => el.remove());
                 
-                // Add final text
+                // Add enhanced final text with speaker and confidence info
                 const finalDiv = document.createElement('div');
                 finalDiv.className = 'final-text';
-                finalDiv.textContent = text;
+                
+                // Add speaker indicator if available
+                let displayText = text;
+                if (speaker) {
+                    const speakerSpan = document.createElement('span');
+                    speakerSpan.className = 'speaker-tag';
+                    speakerSpan.textContent = speaker;
+                    finalDiv.appendChild(speakerSpan);
+                    
+                    const textSpan = document.createElement('span');
+                    textSpan.textContent = ` ${displayText}`;
+                    finalDiv.appendChild(textSpan);
+                } else {
+                    finalDiv.textContent = displayText;
+                }
+                
+                // Add confidence indicator if available
+                if (confidence && confidence < 0.8) {
+                    finalDiv.classList.add('low-confidence');
+                    finalDiv.title = `Confidence: ${Math.round(confidence * 100)}%`;
+                }
+                
                 transcript.appendChild(finalDiv);
             } else {
                 // Remove existing interim text and add new one
@@ -494,7 +553,21 @@
                 
                 const interimDiv = document.createElement('div');
                 interimDiv.className = 'interim-text';
-                interimDiv.textContent = text;
+                
+                // Add speaker info to interim text too
+                if (speaker) {
+                    const speakerSpan = document.createElement('span');
+                    speakerSpan.className = 'speaker-tag interim';
+                    speakerSpan.textContent = speaker;
+                    interimDiv.appendChild(speakerSpan);
+                    
+                    const textSpan = document.createElement('span');
+                    textSpan.textContent = ` ${text}`;
+                    interimDiv.appendChild(textSpan);
+                } else {
+                    interimDiv.textContent = text;
+                }
+                
                 transcript.appendChild(interimDiv);
             }
             
@@ -758,16 +831,37 @@
                 
                 updateStatus('Setting up audio processing...', false);
                 
-                // Create audio context
+                // Create audio context with optimal settings for medical conversations
                 audioContext = new (window.AudioContext || window.webkitAudioContext)({
-                    sampleRate: 16000
+                    sampleRate: 16000,
+                    latencyHint: 'interactive' // Optimize for real-time interaction
                 });
                 
                 source = audioContext.createMediaStreamSource(stream);
                 
-                // Create gain node to boost quiet speech
+                // Create filter chain for better medical speech recognition
+                
+                // 1. High-pass filter to remove low-frequency noise (AC hum, etc.)
+                const highPassFilter = audioContext.createBiquadFilter();
+                highPassFilter.type = 'highpass';
+                highPassFilter.frequency.value = 80; // Remove frequencies below 80Hz
+                
+                // 2. Compressor to normalize audio levels (important for varying speaking volumes)
+                const compressor = audioContext.createDynamicsCompressor();
+                compressor.threshold.value = -20;
+                compressor.knee.value = 5;
+                compressor.ratio.value = 5;
+                compressor.attack.value = 0.005;
+                compressor.release.value = 0.1;
+                
+                // 3. Gain node for controlled amplification
                 const gainNode = audioContext.createGain();
-                gainNode.gain.value = 2.0; // Boost audio by 2x for better detection
+                gainNode.gain.value = 1.8; // Slightly less aggressive gain to prevent clipping
+                
+                // 4. Low-pass filter to remove high-frequency noise while preserving speech
+                const lowPassFilter = audioContext.createBiquadFilter();
+                lowPassFilter.type = 'lowpass';
+                lowPassFilter.frequency.value = 8000; // Human speech rarely goes above 8kHz
                 
                 // Create script processor for audio data (optimized for real-time)
                 processor = audioContext.createScriptProcessor(4096, 1, 1);
@@ -810,41 +904,77 @@
                     bufferSize = 0;
                 };
                 
+                // Advanced voice activity detection variables
+                let silenceCount = 0;
+                let speechCount = 0;
+                const silenceThreshold = 10; // frames of silence before considering it quiet
+                let lastAudioLevel = 0;
+                let audioLevelSmoothed = 0;
+                
                 processor.onaudioprocess = function(event) {
                     if (isRecording) {
                         const inputData = event.inputBuffer.getChannelData(0);
                         
-                        // Check if there's actual audio (sensitive to quiet speech)
-                        let hasAudio = false;
+                        // Advanced audio analysis for better voice detection
                         let audioLevel = 0;
+                        let rmsLevel = 0; // Root Mean Square for better level detection
+                        let peakLevel = 0;
+                        
+                        // Calculate RMS and peak levels
                         for (let i = 0; i < inputData.length; i++) {
-                            const level = Math.abs(inputData[i]);
-                            audioLevel = Math.max(audioLevel, level);
-                            if (level > 0.003) { // Much lower threshold for slow/quiet speech
-                                hasAudio = true;
-                            }
+                            const sample = inputData[i];
+                            const absLevel = Math.abs(sample);
+                            peakLevel = Math.max(peakLevel, absLevel);
+                            rmsLevel += sample * sample;
                         }
+                        
+                        rmsLevel = Math.sqrt(rmsLevel / inputData.length);
+                        
+                        // Smooth the audio level to reduce noise sensitivity
+                        audioLevelSmoothed = 0.9 * audioLevelSmoothed + 0.1 * rmsLevel;
+                        
+                        // Dynamic threshold based on recent audio levels
+                        const baseThreshold = 0.002; // Lower base threshold for quiet speech
+                        const dynamicThreshold = Math.max(baseThreshold, audioLevelSmoothed * 0.3);
+                        
+                        // Improved voice activity detection
+                        let hasAudio = false;
+                        if (rmsLevel > dynamicThreshold && peakLevel > 0.005) {
+                            hasAudio = true;
+                            speechCount++;
+                            silenceCount = 0;
+                        } else {
+                            silenceCount++;
+                            if (speechCount > 0) speechCount--;
+                        }
+                        
+                        // Only consider it actual speech if we have consistent audio
+                        const hasSpeech = speechCount > 2 && silenceCount < silenceThreshold;
                         
                         // Always add to buffer
                         audioBuffer.push(new Float32Array(inputData));
                         bufferSize += inputData.length;
                         
-                                        // Send more frequently for better capture of slow speech
-                if ((hasAudio && bufferSize >= 1024) || bufferSize >= maxBufferSize || bufferSize >= 2048) {
-                    // Show audio indicator when transmitting (with debouncing to prevent flickering)
-                    if (hasAudio) {
-                        audioIndicator.classList.add('active');
-                        // Clear any existing timeout
-                        if (window.audioIndicatorTimeout) {
-                            clearTimeout(window.audioIndicatorTimeout);
+                        // Optimized sending logic for medical conversations
+                        const shouldSend = (hasSpeech && bufferSize >= 1024) ||  // Send when we detect consistent speech
+                                         (hasAudio && bufferSize >= 2048) ||     // Send for any audio above threshold
+                                         bufferSize >= maxBufferSize;            // Always send when buffer is full
+                        
+                        if (shouldSend) {
+                            // Show audio indicator when transmitting (with better feedback)
+                            if (hasSpeech) {
+                                audioIndicator.classList.add('active');
+                                // Clear any existing timeout
+                                if (window.audioIndicatorTimeout) {
+                                    clearTimeout(window.audioIndicatorTimeout);
+                                }
+                                // Set a longer timeout to prevent rapid flickering
+                                window.audioIndicatorTimeout = setTimeout(() => {
+                                    audioIndicator.classList.remove('active');
+                                }, 2000); // Even longer for medical conversations
+                            }
+                            sendAudioBuffer();
                         }
-                        // Set a longer timeout to prevent rapid flickering
-                        window.audioIndicatorTimeout = setTimeout(() => {
-                            audioIndicator.classList.remove('active');
-                        }, 1500); // Longer duration for smoother UX
-                    }
-                    sendAudioBuffer();
-                }
                     }
                 };
                 
@@ -855,9 +985,12 @@
                     }
                 }, 150); // Slightly longer interval for better slow speech capture
                 
-                // Connect audio chain: source -> gain -> processor -> destination
-                source.connect(gainNode);
-                gainNode.connect(processor);
+                // Connect advanced audio chain: source -> highpass -> compressor -> gain -> lowpass -> processor -> destination
+                source.connect(highPassFilter);
+                highPassFilter.connect(compressor);
+                compressor.connect(gainNode);
+                gainNode.connect(lowPassFilter);
+                lowPassFilter.connect(processor);
                 processor.connect(audioContext.destination);
                 
                 // Start transcription on server

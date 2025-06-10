@@ -251,25 +251,26 @@ def handle_start_transcription():
         # Create connection
         deepgram_connection = deepgram.listen.live.v("1")
         
-        # Configure live transcription options (optimized for accuracy)
+        # Configure live transcription options (optimized for medical accuracy)
         options = LiveOptions(
-            model="nova-2",
+            model="nova-2",  # Best model for medical terminology
             language="en-US",
             smart_format=True,
             encoding="linear16",
             channels=1,
             sample_rate=16000,
             interim_results=True,
-            utterance_end_ms="1200",  # Balanced for accuracy and speed
+            utterance_end_ms="2000",  # Longer for medical conversations (more thoughtful speech)
             vad_events=True,
             punctuate=True,
-            profanity_filter=False,
-            redact=False,
-            diarize=False,
-            numerals=True,
-            endpointing=500,  # More patient for slow speech
-            filler_words=True,  # Include filler words for better context
-            multichannel=False
+            profanity_filter=False,  # Important for medical terms that might be flagged
+            redact=False,  # Don't redact medical information
+            diarize=True,  # Enable speaker separation for doctor/patient identification
+            numerals=True,  # Important for medical measurements, dosages
+            endpointing=800,  # More patient for medical terminology and pauses
+            filler_words=False,  # Remove "um", "uh" for cleaner medical notes
+            multichannel=False,
+            keywords=["patient", "doctor", "symptoms", "diagnosis", "treatment", "medication", "prescription", "mg", "ml", "blood pressure", "temperature", "pain", "history", "allergies", "surgery", "chronic", "acute"]  # Medical keywords boost
         )
         
         # Event handlers
@@ -279,20 +280,42 @@ def handle_start_transcription():
             if len(sentence) == 0:
                 return
             
+            # Extract speaker information if available (from diarization)
+            speaker = None
+            confidence = result.channel.alternatives[0].confidence if hasattr(result.channel.alternatives[0], 'confidence') else None
+            
+            # Check for speaker metadata in diarization
+            if hasattr(result.channel, 'diarize') and result.channel.diarize:
+                speaker = f"Speaker {result.channel.diarize.speaker}" if hasattr(result.channel.diarize, 'speaker') else None
+            
             if result.is_final:
-                # Add to full transcript
-                full_transcript += sentence + " "
+                # Enhanced transcript formatting with timestamps and speaker info
+                timestamp = result.channel.alternatives[0].words[0].start if hasattr(result.channel.alternatives[0], 'words') and result.channel.alternatives[0].words else None
                 
-                # Send final transcript
+                # Add to full transcript with enhanced formatting
+                if speaker:
+                    full_transcript += f"[{speaker}] {sentence} "
+                else:
+                    full_transcript += f"{sentence} "
+                
+                # Send enhanced final transcript
                 socketio.emit('transcript', {
                     'text': sentence,
-                    'is_final': True
+                    'is_final': True,
+                    'speaker': speaker,
+                    'confidence': confidence,
+                    'timestamp': timestamp
                 })
+                
+                # Log for debugging
+                print(f"Final transcript: {sentence[:50]}... (Speaker: {speaker}, Confidence: {confidence})")
             else:
-                # Send interim transcript
+                # Send interim transcript with current processing info
                 socketio.emit('transcript', {
                     'text': sentence,
-                    'is_final': False
+                    'is_final': False,
+                    'speaker': speaker,
+                    'confidence': confidence
                 })
         
         def on_metadata(self, metadata, **kwargs):
