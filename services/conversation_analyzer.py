@@ -8,6 +8,7 @@ from models.analysis_models import (
     SpeakerAnalysis, ConversationSegment, SOAPComponent, SOAPNoteWithSources,
     AnalysisMetadata, BasicSOAPNote, SourceReference
 )
+from prompts import PromptManager
 
 
 class ConversationAnalyzer:
@@ -24,7 +25,7 @@ class ConversationAnalyzer:
             if len(transcript_text.strip()) < 10:
                 return self._create_empty_analysis("Transcript too short for analysis")
             
-            prompt = self._create_basic_analysis_prompt(transcript_text)
+            prompt = PromptManager.get_basic_analysis_prompt(transcript_text)
             
             message = self.anthropic_client.messages.create(
                 model="claude-3-5-sonnet-20241022",
@@ -50,7 +51,7 @@ class ConversationAnalyzer:
             # Split transcript into numbered segments for easier reference
             transcript_segments = self._create_transcript_segments(transcript_text)
             
-            prompt = self._create_enhanced_analysis_prompt(transcript_text, transcript_segments)
+            prompt = PromptManager.get_enhanced_analysis_prompt(transcript_text, transcript_segments)
             
             message = self.anthropic_client.messages.create(
                 model="claude-3-5-sonnet-20241022",
@@ -96,101 +97,9 @@ class ConversationAnalyzer:
                 })
         return transcript_segments
     
-    def _create_basic_analysis_prompt(self, transcript_text: str) -> str:
-        """Create prompt for basic conversation analysis"""
-        return f"""
-        Please analyze this doctor-patient conversation transcript and provide both a structured analysis AND a clinical SOAP note:
 
-        TRANSCRIPT:
-        {transcript_text}
-
-        Format your response as JSON with this structure:
-        {{
-            "speaker_analysis": {{
-                "doctor_segments": ["segment1", "segment2"],
-                "patient_segments": ["segment1", "segment2"],
-                "doctor_percentage": 60,
-                "patient_percentage": 40
-            }},
-            "conversation_segments": [
-                {{
-                    "type": "greeting",
-                    "content": "Hello, how are you feeling today?",
-                    "speaker": "doctor"
-                }}
-            ],
-            "medical_topics": ["symptom1", "symptom2", "diagnosis"],
-            "summary": "Brief summary of the consultation",
-            "soap_note": {{
-                "subjective": "Patient's reported symptoms, concerns, and history",
-                "objective": "Observable findings, physical examination results",
-                "assessment": "Clinical impression, primary diagnosis",
-                "plan": "Treatment plan including medications, tests, follow-up"
-            }}
-        }}
-        """
     
-    def _create_enhanced_analysis_prompt(self, transcript_text: str, transcript_segments: List[Dict[str, Any]]) -> str:
-        """Create prompt for enhanced conversation analysis with source mapping"""
-        segments_text = chr(10).join([f"[{seg['id']}] {seg['text']}" for seg in transcript_segments])
-        
-        return f"""
-        You are a medical AI assistant analyzing a doctor-patient conversation.
 
-        TRANSCRIPT (with segment numbers for reference):
-        {segments_text}
-
-        Respond with VALID JSON in this exact structure:
-        {{
-            "speaker_analysis": {{
-                "doctor_segments": ["segment1", "segment2"],
-                "patient_segments": ["segment1", "segment2"],
-                "doctor_percentage": 60,
-                "patient_percentage": 40
-            }},
-            "conversation_segments": [
-                {{
-                    "type": "greeting",
-                    "content": "Hello, how are you feeling today?",
-                    "speaker": "doctor"
-                }}
-            ],
-            "medical_topics": ["symptom1", "symptom2", "diagnosis"],
-            "summary": "Brief summary of the consultation",
-            "soap_note_with_sources": {{
-                "subjective": {{
-                    "content": "Patient reports symptoms",
-                    "sources": [
-                        {{
-                            "segment_ids": [3, 5],
-                            "excerpt": "I have chest pain",
-                            "reasoning": "Patient describing chief complaint"
-                        }}
-                    ],
-                    "confidence": 85
-                }},
-                "objective": {{
-                    "content": "Physical examination findings",
-                    "sources": [],
-                    "confidence": 80
-                }},
-                "assessment": {{
-                    "content": "Clinical diagnosis",
-                    "sources": [],
-                    "confidence": 75
-                }},
-                "plan": {{
-                    "content": "Treatment plan",
-                    "sources": [],
-                    "confidence": 90
-                }}
-            }},
-            "analysis_metadata": {{
-                "total_segments": {len(transcript_segments)},
-                "overall_confidence": 85
-            }}
-        }}
-        """
     
     def _parse_json_response(self, response_text: str) -> Dict[str, Any]:
         """Parse JSON response from Claude with fallback handling"""

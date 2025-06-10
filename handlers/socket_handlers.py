@@ -13,17 +13,17 @@ class SocketHandlers:
         self.conversation_analysis = None
         self.socketio = socketio
     
-    def handle_connect(self):
+    def handle_connect(self, *args, **kwargs):
         """Handle client connection"""
         print('Client connected')
         emit('status', {'message': 'Connected to server'})
     
-    def handle_disconnect(self):
+    def handle_disconnect(self, *args, **kwargs):
         """Handle client disconnection"""
         print('Client disconnected')
         self.transcription_service.stop_transcription()
     
-    def handle_start_transcription(self):
+    def handle_start_transcription(self, *args, **kwargs):
         """Handle start transcription request"""
         print('Starting transcription...')
         
@@ -64,7 +64,7 @@ class SocketHandlers:
         if 'audio' in data:
             self.transcription_service.send_audio_data(data['audio'])
     
-    def handle_stop_transcription(self):
+    def handle_stop_transcription(self, *args, **kwargs):
         """Handle stop transcription request"""
         print('Stopping transcription...')
         
@@ -110,7 +110,7 @@ class SocketHandlers:
                 emit('conversation_analysis', empty_analysis)
                 emit('status', {'message': 'No transcript to analyze'})
     
-    def handle_retry_analysis(self):
+    def handle_retry_analysis(self, *args, **kwargs):
         """Handle retry analysis request"""
         print('Retrying analysis...')
         
@@ -148,7 +148,7 @@ class SocketHandlers:
             else:
                 emit('status', {'message': 'No transcript available to analyze'})
     
-    def handle_test_analysis(self):
+    def handle_test_analysis(self, *args, **kwargs):
         """Handle test analysis request with sample data"""
         print('Testing analysis with sample data including source mapping...')
         

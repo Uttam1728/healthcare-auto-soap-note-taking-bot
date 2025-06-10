@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Transcription</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Live Transcription</h1>
+        
+        <div id="status" class="status">Ready to start transcription</div>
+        
+        <div class="controls">
+            <button id="startBtn" onclick="startTranscription()">
+                <span class="mic-icon">🎤</span>Start Recording
+            </button>
+            <button id="stopBtn" onclick="stopTranscription()" disabled>
+                <span class="mic-icon">⏹️</span>Stop Recording
+            </button>
+        </div>
+        
+        <div id="recordingIndicator" class="recording-indicator">
+            🔴 Recording... Speak now!
+        </div>
+        
+        <div id="audioIndicator" class="audio-indicator">
+            🎤 Audio detected - transmitting...
+        </div>
+        
+        <div class="transcript-container">
+            <div id="transcript" class="transcript-text">
+                <div class="empty-state">Click "Start Recording" to begin transcription</div>
+            </div>
+        </div>
+        
+        <div id="analysisContainer" class="analysis-container" style="display: none;">
+            <h2>📊 Conversation Analysis</h2>
+            <div id="analysisContent" class="analysis-content"></div>
+        </div>
+    </div>
+
+    <!-- Load JavaScript modules in order -->
+    <script src="{{ url_for('static', filename='js/socket-client.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/audio-recorder.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/ui-handler.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html> 
