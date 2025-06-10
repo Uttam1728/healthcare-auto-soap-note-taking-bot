@@ -21,7 +21,6 @@ full_transcript = ""
 conversation_analysis = None
 
 # Initialize Anthropic client
-print(f"Anthropic API key: {ANTHROPIC_API_KEY}")
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 def analyze_conversation(transcript_text):
