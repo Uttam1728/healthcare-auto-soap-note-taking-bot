@@ -137,10 +137,17 @@
             color: #ff4757;
             font-weight: 600;
             margin: 10px 0;
+            animation: pulse-gentle 2s infinite;
         }
 
         .recording-indicator.active {
             display: block;
+        }
+
+        @keyframes pulse-gentle {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
         }
 
         .audio-indicator {
@@ -149,10 +156,18 @@
             font-weight: 600;
             margin: 5px 0;
             font-size: 0.9rem;
+            background: rgba(40, 167, 69, 0.1);
+            border: 1px solid rgba(40, 167, 69, 0.3);
+            border-radius: 20px;
+            padding: 5px 15px;
+            transition: all 0.3s ease;
         }
 
         .audio-indicator.active {
             display: block;
+            background: rgba(40, 167, 69, 0.2);
+            border-color: rgba(40, 167, 69, 0.5);
+            transform: scale(1.02);
         }
 
         .mic-icon {
@@ -374,7 +389,7 @@
             🔴 Recording... Speak now!
         </div>
         
-        <div id="audioIndicator" class="audio-indicator" style="display: none;">
+        <div id="audioIndicator" class="audio-indicator">
             🎤 Audio detected - transmitting...
         </div>
         
@@ -435,6 +450,18 @@
         
         socket.on('conversation_analysis', function(data) {
             displayAnalysis(data);
+        });
+        
+        socket.on('clear_session', function() {
+            // Clear transcript display
+            transcript.innerHTML = '<div class="empty-state">Waiting for speech...</div>';
+            
+            // Hide analysis container
+            const analysisContainer = document.getElementById('analysisContainer');
+            analysisContainer.style.display = 'none';
+            
+            // Reset status
+            updateStatus('Session cleared - ready for new recording', false);
         });
         
         // Helper functions
@@ -504,19 +531,60 @@
             const analysisContent = document.getElementById('analysisContent');
             
             if (analysisData.error) {
-                analysisContent.innerHTML = `
+                let errorContent = `
                     <div class="analysis-section">
-                        <h3>❌ Analysis Error</h3>
-                        <p style="color: #d32f2f;">${analysisData.error}</p>
-                        <button onclick="retryAnalysis()" style="margin: 10px 0; padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                        <h3>⚠️ Analysis Notice</h3>
+                        <p style="color: #d32f2f; margin-bottom: 15px;"><strong>${analysisData.error}</strong></p>
+                `;
+                
+                // Add reason if available
+                if (analysisData.reason) {
+                    errorContent += `<p style="color: #666; margin-bottom: 15px;">${analysisData.reason}</p>`;
+                }
+                
+                errorContent += `
+                        <button onclick="retryAnalysis()" style="margin: 10px 5px 10px 0; padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer;">
                             🔄 Retry Analysis
                         </button>
-                        <button onclick="testAnalysis()" style="margin: 10px 0 10px 10px; padding: 8px 16px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                        <button onclick="testAnalysis()" style="margin: 10px 0; padding: 8px 16px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer;">
                             🧪 Test with Sample Data
                         </button>
-                        ${analysisData.raw_response ? `<details><summary>Raw Response (Click to expand)</summary><pre style="white-space: pre-wrap; max-height: 300px; overflow-y: auto; background: #f5f5f5; padding: 10px; border-radius: 4px;">${analysisData.raw_response}</pre></details>` : ''}
+                        ${analysisData.raw_response ? `<details style="margin-top: 15px;"><summary>Raw Response (Click to expand)</summary><pre style="white-space: pre-wrap; max-height: 300px; overflow-y: auto; background: #f5f5f5; padding: 10px; border-radius: 4px; font-family: monospace; font-size: 0.85em;">${analysisData.raw_response}</pre></details>` : ''}
                     </div>
                 `;
+                
+                // Still show SOAP note structure even for errors
+                if (analysisData.soap_note) {
+                    errorContent += `
+                        <div class="analysis-section">
+                            <div class="soap-note">
+                                <h3>🏥 Clinical SOAP Note (Limited)</h3>
+                                
+                                <div class="soap-section subjective">
+                                    <div class="soap-header subjective">S - Subjective</div>
+                                    <div class="soap-content">${formatSoapContent(analysisData.soap_note.subjective) || 'Not documented'}</div>
+                                </div>
+                                
+                                <div class="soap-section objective">
+                                    <div class="soap-header objective">O - Objective</div>
+                                    <div class="soap-content">${formatSoapContent(analysisData.soap_note.objective) || 'Not documented'}</div>
+                                </div>
+                                
+                                <div class="soap-section assessment">
+                                    <div class="soap-header assessment">A - Assessment</div>
+                                    <div class="soap-content">${formatSoapContent(analysisData.soap_note.assessment) || 'Not documented'}</div>
+                                </div>
+                                
+                                <div class="soap-section plan">
+                                    <div class="soap-header plan">P - Plan</div>
+                                    <div class="soap-content">${formatSoapContent(analysisData.soap_note.plan) || 'Not documented'}</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                analysisContent.innerHTML = errorContent;
                 analysisContainer.style.display = 'block';
                 return;
             }
@@ -761,15 +829,22 @@
                         audioBuffer.push(new Float32Array(inputData));
                         bufferSize += inputData.length;
                         
-                        // Send more frequently for better capture of slow speech
-                        if ((hasAudio && bufferSize >= 1024) || bufferSize >= maxBufferSize || bufferSize >= 2048) {
-                            // Show audio indicator when transmitting
-                            if (hasAudio) {
-                                audioIndicator.classList.add('active');
-                                setTimeout(() => audioIndicator.classList.remove('active'), 300);
-                            }
-                            sendAudioBuffer();
+                                        // Send more frequently for better capture of slow speech
+                if ((hasAudio && bufferSize >= 1024) || bufferSize >= maxBufferSize || bufferSize >= 2048) {
+                    // Show audio indicator when transmitting (with debouncing to prevent flickering)
+                    if (hasAudio) {
+                        audioIndicator.classList.add('active');
+                        // Clear any existing timeout
+                        if (window.audioIndicatorTimeout) {
+                            clearTimeout(window.audioIndicatorTimeout);
                         }
+                        // Set a longer timeout to prevent rapid flickering
+                        window.audioIndicatorTimeout = setTimeout(() => {
+                            audioIndicator.classList.remove('active');
+                        }, 1500); // Longer duration for smoother UX
+                    }
+                    sendAudioBuffer();
+                }
                     }
                 };
                 
@@ -788,7 +863,8 @@
                 // Start transcription on server
                 socket.emit('start_transcription');
                 
-                // Hide previous analysis
+                // Clear previous session data
+                transcript.innerHTML = '<div class="empty-state">Waiting for speech...</div>';
                 document.getElementById('analysisContainer').style.display = 'none';
                 
                 // Update UI state
@@ -823,6 +899,12 @@
                     bufferInterval = null;
                 }
                 
+                // Clear audio indicator timeout
+                if (window.audioIndicatorTimeout) {
+                    clearTimeout(window.audioIndicatorTimeout);
+                    window.audioIndicatorTimeout = null;
+                }
+                
                 // Clean up audio resources
                 if (processor) {
                     processor.disconnect();
@@ -848,6 +930,7 @@
                 startBtn.innerHTML = '<span class="mic-icon">🎤</span>Start Recording';
                 stopBtn.disabled = true;
                 recordingIndicator.classList.remove('active');
+                audioIndicator.classList.remove('active');
                 
                 updateStatus('Recording stopped', false);
                 

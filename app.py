@@ -21,11 +21,34 @@ full_transcript = ""
 conversation_analysis = None
 
 # Initialize Anthropic client
+print(f"Anthropic API key: {ANTHROPIC_API_KEY}")
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 def analyze_conversation(transcript_text):
     """Analyze doctor-patient conversation and generate SOAP note using Claude"""
     try:
+        # Check if transcript is too small
+        if len(transcript_text.strip()) < 10:
+            return {
+                "error": "Transcript too short for analysis",
+                "reason": "The recorded conversation is too brief to generate a meaningful medical analysis. Please record a longer conversation with more clinical content.",
+                "speaker_analysis": {
+                    "doctor_segments": [],
+                    "patient_segments": [],
+                    "doctor_percentage": 0,
+                    "patient_percentage": 0
+                },
+                "conversation_segments": [],
+                "medical_topics": [],
+                "summary": "Insufficient conversation content for analysis",
+                "soap_note": {
+                    "subjective": "Insufficient data - conversation too brief to extract patient symptoms or concerns",
+                    "objective": "Not documented - no clinical findings available from brief conversation",
+                    "assessment": "Cannot assess - inadequate clinical information provided in short conversation",
+                    "plan": "Unable to formulate plan - recommend longer clinical conversation for proper documentation"
+                }
+            }
+        
         prompt = f"""
         Please analyze this doctor-patient conversation transcript and provide both a structured analysis AND a clinical SOAP note:
 
@@ -39,6 +62,8 @@ def analyze_conversation(transcript_text):
         3. **DISTRIBUTION ANALYSIS**: Provide percentages of talking time between doctor and patient
         4. **KEY MEDICAL TOPICS**: Extract main medical topics discussed
         5. **SOAP NOTE**: Generate a professional clinical SOAP note from this conversation
+
+        IMPORTANT: Always respond with valid JSON in the exact structure below, even if the transcript is short or lacks medical content. If there's insufficient information, provide reasons in the appropriate fields.
 
         Format your response as JSON with this structure:
         {{
@@ -68,7 +93,8 @@ def analyze_conversation(transcript_text):
         Guidelines for SOAP note generation:
         - Extract information accurately from the conversation
         - Use professional medical terminology
-        - If information is not available for a section, note "Not documented" or "Not assessed"
+        - If information is not available for a section, note "Not documented" or "Not assessed" with specific reason
+        - If transcript is too short, still provide the JSON structure with explanations of why sections cannot be completed
         - Ensure clinical accuracy and completeness
         - Focus on medically relevant information
         - IMPORTANT: Keep all text in single lines within JSON strings - use semicolons or bullet points instead of line breaks
@@ -199,9 +225,24 @@ def handle_start_transcription():
     
     print('Starting transcription...')
     
+    # Clean up previous session and reset everything
+    if deepgram_connection:
+        try:
+            deepgram_connection.finish()
+        except:
+            pass
+        deepgram_connection = None
+    
     # Reset transcript and analysis for new session
     full_transcript = ""
     conversation_analysis = None
+    
+    # Generate new session ID
+    import uuid
+    current_session_id = str(uuid.uuid4())
+    
+    # Clear frontend display
+    emit('clear_session')
     
     try:
         # Initialize Deepgram client
@@ -342,10 +383,40 @@ def handle_stop_transcription():
             emit('conversation_analysis', analysis)
             emit('status', {'message': 'Analysis complete!'})
             
+            # Disconnect the webhook after analysis is complete
+            if deepgram_connection:
+                try:
+                    deepgram_connection.finish()
+                except:
+                    pass
+                deepgram_connection = None
+                print('Deepgram connection disconnected after analysis')
+            
         except Exception as e:
             print(f"Error in analysis: {e}")
             emit('error', {'message': f'Analysis failed: {str(e)}'})
     else:
+        # Send minimal analysis for empty transcript
+        empty_analysis = {
+            "error": "No transcript available",
+            "reason": "No speech was detected or transcribed during the recording session",
+            "speaker_analysis": {
+                "doctor_segments": [],
+                "patient_segments": [],
+                "doctor_percentage": 0,
+                "patient_percentage": 0
+            },
+            "conversation_segments": [],
+            "medical_topics": [],
+            "summary": "No conversation recorded",
+            "soap_note": {
+                "subjective": "No patient information captured - no speech detected",
+                "objective": "Not documented - no conversation recorded",
+                "assessment": "Cannot assess - no clinical conversation available", 
+                "plan": "Unable to create plan - please record a conversation"
+            }
+        }
+        emit('conversation_analysis', empty_analysis)
         emit('status', {'message': 'No transcript to analyze'})
 
 @socketio.on('retry_analysis')
@@ -366,6 +437,15 @@ def handle_retry_analysis():
             # Send analysis to frontend
             emit('conversation_analysis', analysis)
             emit('status', {'message': 'Analysis complete!'})
+            
+            # Disconnect the webhook after analysis is complete
+            if deepgram_connection:
+                try:
+                    deepgram_connection.finish()
+                except:
+                    pass
+                deepgram_connection = None
+                print('Deepgram connection disconnected after retry analysis')
             
         except Exception as e:
             print(f"Error in retry analysis: {e}")
