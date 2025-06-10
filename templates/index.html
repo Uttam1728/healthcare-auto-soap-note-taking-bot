@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Transcription</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            text-align: center;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 2.5rem;
+            font-weight: 600;
+        }
+
+        .status {
+            background: #e3f2fd;
+            border: 1px solid #bbdefb;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 20px 0;
+            font-size: 14px;
+            color: #1976d2;
+        }
+
+        .status.error {
+            background: #ffebee;
+            border-color: #ffcdd2;
+            color: #d32f2f;
+        }
+
+        .controls {
+            margin: 30px 0;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 50px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin: 0 10px;
+            min-width: 120px;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        button.recording {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+
+        .transcript-container {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+            text-align: left;
+            margin-top: 30px;
+            border: 2px solid #e9ecef;
+        }
+
+        .transcript-text {
+            line-height: 1.6;
+            font-size: 16px;
+            color: #333;
+        }
+
+        .interim-text {
+            color: #666;
+            font-style: italic;
+        }
+
+        .final-text {
+            color: #333;
+            font-weight: 500;
+            margin-bottom: 10px;
+        }
+
+        .empty-state {
+            color: #999;
+            text-align: center;
+            font-style: italic;
+            margin-top: 80px;
+        }
+
+        .recording-indicator {
+            display: none;
+            color: #ff4757;
+            font-weight: 600;
+            margin: 10px 0;
+        }
+
+        .recording-indicator.active {
+            display: block;
+        }
+
+        .audio-indicator {
+            display: none;
+            color: #28a745;
+            font-weight: 600;
+            margin: 5px 0;
+            font-size: 0.9rem;
+        }
+
+        .audio-indicator.active {
+            display: block;
+        }
+
+        .mic-icon {
+            font-size: 24px;
+            margin-right: 8px;
+        }
+
+        .analysis-container {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 30px;
+            border: 2px solid #e9ecef;
+        }
+
+        .analysis-container h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+        }
+
+        .analysis-content {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+        }
+
+        .analysis-section {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .analysis-section:last-child {
+            border-bottom: none;
+        }
+
+        .analysis-section h3 {
+            color: #555;
+            margin-bottom: 10px;
+            font-size: 1.1rem;
+        }
+
+        .speaker-stats {
+            display: flex;
+            gap: 20px;
+            margin: 10px 0;
+        }
+
+        .stat-item {
+            background: #e3f2fd;
+            padding: 10px 15px;
+            border-radius: 8px;
+            text-align: center;
+            flex: 1;
+        }
+
+        .stat-item.doctor {
+            background: #e8f5e8;
+            border: 1px solid #4caf50;
+        }
+
+        .stat-item.patient {
+            background: #fff3e0;
+            border: 1px solid #ff9800;
+        }
+
+        .stat-percentage {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .stat-label {
+            font-size: 0.9rem;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .topic-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .topic-tag {
+            background: #667eea;
+            color: white;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+        }
+
+        .conversation-segment {
+            background: #f5f5f5;
+            border-left: 4px solid #667eea;
+            padding: 10px 15px;
+            margin: 8px 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .segment-speaker {
+            font-weight: bold;
+            color: #333;
+            text-transform: capitalize;
+        }
+
+        .segment-type {
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            margin-left: 10px;
+        }
+
+        .summary-text {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 8px;
+            font-style: italic;
+            line-height: 1.5;
+        }
+
+        .soap-note {
+            background: #f8f9fa;
+            border: 2px solid #007bff;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .soap-section {
+            margin-bottom: 20px;
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            border-left: 4px solid #007bff;
+        }
+
+        .soap-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .soap-header {
+            font-weight: bold;
+            color: #007bff;
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .soap-content {
+            line-height: 1.6;
+            color: #333;
+            white-space: pre-wrap;
+        }
+
+        .soap-note h3 {
+            color: #007bff;
+            margin-bottom: 15px;
+            font-size: 1.3rem;
+            text-align: center;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+
+        .soap-section.subjective {
+            border-left-color: #28a745;
+        }
+
+        .soap-section.objective {
+            border-left-color: #17a2b8;
+        }
+
+        .soap-section.assessment {
+            border-left-color: #ffc107;
+        }
+
+        .soap-section.plan {
+            border-left-color: #dc3545;
+        }
+
+        .soap-header.subjective {
+            color: #28a745;
+        }
+
+        .soap-header.objective {
+            color: #17a2b8;
+        }
+
+        .soap-header.assessment {
+            color: #ffc107;
+        }
+
+        .soap-header.plan {
+            color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Live Transcription</h1>
+        
+        <div id="status" class="status">Ready to start transcription</div>
+        
+        <div class="controls">
+            <button id="startBtn" onclick="startTranscription()">
+                <span class="mic-icon">🎤</span>Start Recording
+            </button>
+            <button id="stopBtn" onclick="stopTranscription()" disabled>
+                <span class="mic-icon">⏹️</span>Stop Recording
+            </button>
+        </div>
+        
+        <div id="recordingIndicator" class="recording-indicator">
+            🔴 Recording... Speak now!
+        </div>
+        
+        <div id="audioIndicator" class="audio-indicator" style="display: none;">
+            🎤 Audio detected - transmitting...
+        </div>
+        
+        <div class="transcript-container">
+            <div id="transcript" class="transcript-text">
+                <div class="empty-state">Click "Start Recording" to begin transcription</div>
+            </div>
+        </div>
+        
+        <div id="analysisContainer" class="analysis-container" style="display: none;">
+            <h2>📊 Conversation Analysis</h2>
+            <div id="analysisContent" class="analysis-content"></div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Socket.IO connection
+        const socket = io();
+        
+        // Global variables
+        let mediaRecorder;
+        let audioContext;
+        let source;
+        let processor;
+        let isRecording = false;
+        let bufferInterval;
+        let sendAudioBuffer;
+        
+        // DOM elements
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const status = document.getElementById('status');
+        const transcript = document.getElementById('transcript');
+        const recordingIndicator = document.getElementById('recordingIndicator');
+        const audioIndicator = document.getElementById('audioIndicator');
+        
+        // Socket event handlers
+        socket.on('connect', function() {
+            updateStatus('Connected to server', false);
+        });
+        
+        socket.on('disconnect', function() {
+            updateStatus('Disconnected from server', true);
+        });
+        
+        socket.on('status', function(data) {
+            updateStatus(data.message, false);
+        });
+        
+        socket.on('error', function(data) {
+            updateStatus(data.message, true);
+            stopTranscription();
+        });
+        
+        socket.on('transcript', function(data) {
+            displayTranscript(data.text, data.is_final);
+        });
+        
+        socket.on('conversation_analysis', function(data) {
+            displayAnalysis(data);
+        });
+        
+        // Helper functions
+        function updateStatus(message, isError = false) {
+            status.textContent = message;
+            status.className = isError ? 'status error' : 'status';
+        }
+        
+        function displayTranscript(text, isFinal) {
+            if (transcript.querySelector('.empty-state')) {
+                transcript.innerHTML = '';
+            }
+            
+            if (isFinal) {
+                // Remove any existing interim text
+                const interimElements = transcript.querySelectorAll('.interim-text');
+                interimElements.forEach(el => el.remove());
+                
+                // Add final text
+                const finalDiv = document.createElement('div');
+                finalDiv.className = 'final-text';
+                finalDiv.textContent = text;
+                transcript.appendChild(finalDiv);
+            } else {
+                // Remove existing interim text and add new one
+                const existingInterim = transcript.querySelector('.interim-text');
+                if (existingInterim) {
+                    existingInterim.remove();
+                }
+                
+                const interimDiv = document.createElement('div');
+                interimDiv.className = 'interim-text';
+                interimDiv.textContent = text;
+                transcript.appendChild(interimDiv);
+            }
+            
+            // Scroll to bottom
+            transcript.scrollTop = transcript.scrollHeight;
+        }
+        
+        function formatSoapContent(content) {
+            if (!content) return 'Not documented';
+            
+            // If it's already a string, return it
+            if (typeof content === 'string') {
+                return content;
+            }
+            
+            // If it's an object, try to format it nicely
+            if (typeof content === 'object') {
+                if (Array.isArray(content)) {
+                    return content.join('\n• ');
+                } else {
+                    // Convert object to readable format
+                    return Object.entries(content)
+                        .map(([key, value]) => `${key}: ${value}`)
+                        .join('\n');
+                }
+            }
+            
+            // Fallback: convert to string
+            return String(content);
+        }
+        
+        function displayAnalysis(analysisData) {
+            const analysisContainer = document.getElementById('analysisContainer');
+            const analysisContent = document.getElementById('analysisContent');
+            
+            if (analysisData.error) {
+                analysisContent.innerHTML = `
+                    <div class="analysis-section">
+                        <h3>❌ Analysis Error</h3>
+                        <p style="color: #d32f2f;">${analysisData.error}</p>
+                        <button onclick="retryAnalysis()" style="margin: 10px 0; padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                            🔄 Retry Analysis
+                        </button>
+                        <button onclick="testAnalysis()" style="margin: 10px 0 10px 10px; padding: 8px 16px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                            🧪 Test with Sample Data
+                        </button>
+                        ${analysisData.raw_response ? `<details><summary>Raw Response (Click to expand)</summary><pre style="white-space: pre-wrap; max-height: 300px; overflow-y: auto; background: #f5f5f5; padding: 10px; border-radius: 4px;">${analysisData.raw_response}</pre></details>` : ''}
+                    </div>
+                `;
+                analysisContainer.style.display = 'block';
+                return;
+            }
+            
+            let html = '';
+            
+            // Speaker Analysis
+            if (analysisData.speaker_analysis) {
+                const speakerData = analysisData.speaker_analysis;
+                html += `
+                    <div class="analysis-section">
+                        <h3>👥 Speaker Distribution</h3>
+                        <div class="speaker-stats">
+                            <div class="stat-item doctor">
+                                <div class="stat-percentage">${speakerData.doctor_percentage || 50}%</div>
+                                <div class="stat-label">Doctor</div>
+                            </div>
+                            <div class="stat-item patient">
+                                <div class="stat-percentage">${speakerData.patient_percentage || 50}%</div>
+                                <div class="stat-label">Patient</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Medical Topics
+            if (analysisData.medical_topics && analysisData.medical_topics.length > 0) {
+                html += `
+                    <div class="analysis-section">
+                        <h3>🏥 Key Medical Topics</h3>
+                        <div class="topic-tags">
+                            ${analysisData.medical_topics.map(topic => `<span class="topic-tag">${topic}</span>`).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Conversation Segments
+            if (analysisData.conversation_segments && analysisData.conversation_segments.length > 0) {
+                html += `
+                    <div class="analysis-section">
+                        <h3>💬 Conversation Segments</h3>
+                        ${analysisData.conversation_segments.map(segment => `
+                            <div class="conversation-segment">
+                                <span class="segment-speaker">${segment.speaker || 'Unknown'}</span>
+                                <span class="segment-type">${segment.type || 'General'}</span>
+                                <div style="margin-top: 8px;">${segment.content || 'No content'}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+            
+            // Summary
+            if (analysisData.summary) {
+                html += `
+                    <div class="analysis-section">
+                        <h3>📋 Summary</h3>
+                        <div class="summary-text">${analysisData.summary}</div>
+                    </div>
+                `;
+            }
+            
+            // SOAP Note
+            if (analysisData.soap_note) {
+                html += `
+                    <div class="analysis-section">
+                        <div class="soap-note">
+                            <h3>🏥 Clinical SOAP Note</h3>
+                            
+                            <div class="soap-section subjective">
+                                <div class="soap-header subjective">S - Subjective</div>
+                                <div class="soap-content">${formatSoapContent(analysisData.soap_note.subjective) || 'Not documented'}</div>
+                            </div>
+                            
+                            <div class="soap-section objective">
+                                <div class="soap-header objective">O - Objective</div>
+                                <div class="soap-content">${formatSoapContent(analysisData.soap_note.objective) || 'Not documented'}</div>
+                            </div>
+                            
+                            <div class="soap-section assessment">
+                                <div class="soap-header assessment">A - Assessment</div>
+                                <div class="soap-content">${formatSoapContent(analysisData.soap_note.assessment) || 'Not documented'}</div>
+                            </div>
+                            
+                            <div class="soap-section plan">
+                                <div class="soap-header plan">P - Plan</div>
+                                <div class="soap-content">${formatSoapContent(analysisData.soap_note.plan) || 'Not documented'}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            if (!html) {
+                html = '<div class="analysis-section"><h3>No analysis data available</h3></div>';
+            }
+            
+            analysisContent.innerHTML = html;
+            analysisContainer.style.display = 'block';
+            
+            // Scroll to analysis
+            analysisContainer.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        // Check browser compatibility
+        function checkBrowserCompatibility() {
+            if (!navigator.mediaDevices) {
+                return 'Your browser does not support microphone access. Please use Chrome, Firefox, or Safari.';
+            }
+            
+            if (!navigator.mediaDevices.getUserMedia) {
+                return 'Your browser does not support getUserMedia. Please update your browser.';
+            }
+            
+            if (!window.AudioContext && !window.webkitAudioContext) {
+                return 'Your browser does not support Web Audio API. Please use a modern browser.';
+            }
+            
+            if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                return 'Microphone access requires HTTPS or localhost. Please use a secure connection.';
+            }
+            
+            return null;
+        }
+        
+        // Main transcription functions
+        async function startTranscription() {
+            try {
+                // Check browser compatibility first
+                const compatibilityError = checkBrowserCompatibility();
+                if (compatibilityError) {
+                    updateStatus(compatibilityError, true);
+                    return;
+                }
+                
+                updateStatus('Requesting microphone access...', false);
+                
+                // Request microphone access with better error handling
+                let stream;
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            sampleRate: 16000,
+                            channelCount: 1,
+                            volume: 1.0,
+                            echoCancellation: true,
+                            noiseSuppression: false,  // Disable to preserve quiet speech
+                            autoGainControl: true,    // Enable for better volume
+                            googEchoCancellation: true,
+                            googAutoGainControl: true,
+                            googNoiseSuppression: false,
+                            googHighpassFilter: false  // Don't filter low frequencies
+                        }
+                    });
+                } catch (mediaError) {
+                    let errorMessage = 'Microphone access denied. ';
+                    if (mediaError.name === 'NotAllowedError') {
+                        errorMessage += 'Please allow microphone access and try again.';
+                    } else if (mediaError.name === 'NotFoundError') {
+                        errorMessage += 'No microphone found. Please connect a microphone.';
+                    } else if (mediaError.name === 'NotReadableError') {
+                        errorMessage += 'Microphone is already in use by another application.';
+                    } else {
+                        errorMessage += `Error: ${mediaError.message}`;
+                    }
+                    updateStatus(errorMessage, true);
+                    return;
+                }
+                
+                updateStatus('Setting up audio processing...', false);
+                
+                // Create audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000
+                });
+                
+                source = audioContext.createMediaStreamSource(stream);
+                
+                // Create gain node to boost quiet speech
+                const gainNode = audioContext.createGain();
+                gainNode.gain.value = 2.0; // Boost audio by 2x for better detection
+                
+                // Create script processor for audio data (optimized for real-time)
+                processor = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                // Audio buffer to prevent data loss (smaller for better real-time)
+                let audioBuffer = [];
+                let bufferSize = 0;
+                const maxBufferSize = 4096; // Send when buffer reaches this size
+                
+                // Function to send buffered audio data
+                sendAudioBuffer = function() {
+                    if (audioBuffer.length === 0) return;
+                    
+                    // Combine all buffered audio
+                    const combinedLength = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+                    const combinedData = new Float32Array(combinedLength);
+                    
+                    let offset = 0;
+                    for (const chunk of audioBuffer) {
+                        combinedData.set(chunk, offset);
+                        offset += chunk.length;
+                    }
+                    
+                    // Convert float32 to int16
+                    const int16Data = new Int16Array(combinedData.length);
+                    for (let i = 0; i < combinedData.length; i++) {
+                        int16Data[i] = Math.max(-32768, Math.min(32767, combinedData[i] * 32768));
+                    }
+                    
+                    // Convert to base64 and send
+                    try {
+                        const base64Audio = btoa(String.fromCharCode.apply(null, new Uint8Array(int16Data.buffer)));
+                        socket.emit('audio_data', { audio: base64Audio });
+                    } catch (error) {
+                        console.error('Error sending audio data:', error);
+                    }
+                    
+                    // Clear buffer
+                    audioBuffer = [];
+                    bufferSize = 0;
+                };
+                
+                processor.onaudioprocess = function(event) {
+                    if (isRecording) {
+                        const inputData = event.inputBuffer.getChannelData(0);
+                        
+                        // Check if there's actual audio (sensitive to quiet speech)
+                        let hasAudio = false;
+                        let audioLevel = 0;
+                        for (let i = 0; i < inputData.length; i++) {
+                            const level = Math.abs(inputData[i]);
+                            audioLevel = Math.max(audioLevel, level);
+                            if (level > 0.003) { // Much lower threshold for slow/quiet speech
+                                hasAudio = true;
+                            }
+                        }
+                        
+                        // Always add to buffer
+                        audioBuffer.push(new Float32Array(inputData));
+                        bufferSize += inputData.length;
+                        
+                        // Send more frequently for better capture of slow speech
+                        if ((hasAudio && bufferSize >= 1024) || bufferSize >= maxBufferSize || bufferSize >= 2048) {
+                            // Show audio indicator when transmitting
+                            if (hasAudio) {
+                                audioIndicator.classList.add('active');
+                                setTimeout(() => audioIndicator.classList.remove('active'), 300);
+                            }
+                            sendAudioBuffer();
+                        }
+                    }
+                };
+                
+                // Send remaining buffer regularly to catch slow speech
+                bufferInterval = setInterval(() => {
+                    if (isRecording && audioBuffer.length > 0) {
+                        sendAudioBuffer();
+                    }
+                }, 150); // Slightly longer interval for better slow speech capture
+                
+                // Connect audio chain: source -> gain -> processor -> destination
+                source.connect(gainNode);
+                gainNode.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                // Start transcription on server
+                socket.emit('start_transcription');
+                
+                // Hide previous analysis
+                document.getElementById('analysisContainer').style.display = 'none';
+                
+                // Update UI state
+                isRecording = true;
+                startBtn.disabled = true;
+                startBtn.className = 'recording';
+                startBtn.innerHTML = '<span class="mic-icon">🔴</span>Recording...';
+                stopBtn.disabled = false;
+                recordingIndicator.classList.add('active');
+                
+                updateStatus('Recording started! Speak now...', false);
+                
+            } catch (error) {
+                console.error('Error starting transcription:', error);
+                updateStatus(`Error: ${error.message}`, true);
+            }
+        }
+        
+        function stopTranscription() {
+            try {
+                // Stop recording
+                isRecording = false;
+                
+                // Send any remaining buffered audio
+                if (sendAudioBuffer) {
+                    sendAudioBuffer();
+                }
+                
+                // Clear buffer interval
+                if (bufferInterval) {
+                    clearInterval(bufferInterval);
+                    bufferInterval = null;
+                }
+                
+                // Clean up audio resources
+                if (processor) {
+                    processor.disconnect();
+                    processor = null;
+                }
+                
+                if (source) {
+                    source.disconnect();
+                    source = null;
+                }
+                
+                if (audioContext) {
+                    audioContext.close();
+                    audioContext = null;
+                }
+                
+                // Stop transcription on server
+                socket.emit('stop_transcription');
+                
+                // Update UI state
+                startBtn.disabled = false;
+                startBtn.className = '';
+                startBtn.innerHTML = '<span class="mic-icon">🎤</span>Start Recording';
+                stopBtn.disabled = true;
+                recordingIndicator.classList.remove('active');
+                
+                updateStatus('Recording stopped', false);
+                
+            } catch (error) {
+                console.error('Error stopping transcription:', error);
+                updateStatus(`Error stopping: ${error.message}`, true);
+            }
+        }
+        
+        // Handle page unload
+        window.addEventListener('beforeunload', function() {
+            if (isRecording) {
+                stopTranscription();
+            }
+        });
+        
+        // Retry analysis function
+        function retryAnalysis() {
+            updateStatus('Retrying analysis...', false);
+            socket.emit('retry_analysis');
+        }
+        
+        // Test analysis function
+        function testAnalysis() {
+            updateStatus('Testing with sample data...', false);
+            socket.emit('test_analysis');
+        }
+        
+        // Check compatibility on page load
+        window.addEventListener('load', function() {
+            const compatibilityError = checkBrowserCompatibility();
+            if (compatibilityError) {
+                updateStatus(compatibilityError, true);
+                startBtn.disabled = true;
+            }
+        });
+    </script>
+</body>
+</html> 
