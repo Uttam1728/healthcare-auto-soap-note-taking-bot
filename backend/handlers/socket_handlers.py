@@ -1,6 +1,6 @@
 from flask_socketio import emit
-from services.transcription_service import TranscriptionService
-from services.conversation_analyzer import ConversationAnalyzer
+from ..services.transcription_service import TranscriptionService
+from ..services.conversation_analyzer import ConversationAnalyzer
 
 
 class SocketHandlers:

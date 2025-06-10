@@ -1,7 +1,7 @@
 from flask import Flask, render_template
 from flask_socketio import SocketIO, emit
 from config import DEEPGRAM_API_KEY, ANTHROPIC_API_KEY
-from handlers.socket_handlers import SocketHandlers
+from backend.handlers.socket_handlers import SocketHandlers
 
 # Initialize Flask app with frontend folder structure
 app = Flask(__name__, 

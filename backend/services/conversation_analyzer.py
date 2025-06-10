@@ -3,12 +3,12 @@ import re
 from typing import Dict, Any, List
 import anthropic
 from config import ANTHROPIC_API_KEY
-from models.analysis_models import (
+from ..models.analysis_models import (
     TranscriptSegment, ConversationAnalysis, BasicConversationAnalysis,
     SpeakerAnalysis, ConversationSegment, SOAPComponent, SOAPNoteWithSources,
     AnalysisMetadata, BasicSOAPNote, SourceReference
 )
-from prompts import PromptManager
+from ..prompts import PromptManager
 
 
 class ConversationAnalyzer:
