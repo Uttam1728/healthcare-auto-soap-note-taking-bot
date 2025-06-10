@@ -1,159 +1,428 @@
 from flask_socketio import emit
 from ..services.transcription_service import TranscriptionService
 from ..services.conversation_analyzer import ConversationAnalyzer
+from ..utils.logging_config import LoggingMixin, log_performance
+from ..utils.exceptions import (
+    BaseHealthcareException, ErrorHandler, ClientConnectionError,
+    DataTransmissionError
+)
+from ..utils.cache import session_cache, analysis_cache
+import time
 
 
-class SocketHandlers:
-    """Class to handle all SocketIO events"""
+class SocketHandlers(LoggingMixin):
+    """Class to handle all SocketIO events with enhanced error handling"""
     
     def __init__(self, socketio=None):
         """Initialize socket handlers with services"""
-        self.transcription_service = TranscriptionService()
-        self.conversation_analyzer = ConversationAnalyzer()
-        self.conversation_analysis = None
-        self.socketio = socketio
+        try:
+            self.transcription_service = TranscriptionService()
+            self.conversation_analyzer = ConversationAnalyzer()
+            self.conversation_analysis = None
+            self.socketio = socketio
+            self.session_start_time = None
+            self.current_session_id = None
+            self.logger.info("Socket handlers initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize socket handlers: {e}", exc_info=True)
+            raise
     
     def handle_connect(self, *args, **kwargs):
-        """Handle client connection"""
-        print('Client connected')
-        emit('status', {'message': 'Connected to server'})
+        """Handle client connection with session management"""
+        try:
+            self.current_session_id = self.transcription_service.get_session_id()
+            self.session_start_time = time.time()
+            
+            self.logger.info(f"Client connected - Session: {self.current_session_id}")
+            emit('status', {
+                'message': 'Connected to server',
+                'session_id': self.current_session_id,
+                'timestamp': self.session_start_time
+            })
+            
+        except Exception as e:
+            error = ErrorHandler.handle_service_error(e, "socket_connection")
+            self.log_error(error, "handle_connect")
+            emit('error', {'message': 'Connection initialization failed'})
     
     def handle_disconnect(self, *args, **kwargs):
-        """Handle client disconnection"""
-        print('Client disconnected')
-        self.transcription_service.stop_transcription()
+        """Handle client disconnection with cleanup"""
+        try:
+            session_duration = time.time() - self.session_start_time if self.session_start_time else 0
+            
+            self.logger.info(f"Client disconnected - Session: {self.current_session_id}, Duration: {session_duration:.2f}s")
+            
+            # Stop transcription and cleanup
+            self.transcription_service.stop_transcription()
+            
+            # Clear session cache if we have a session ID
+            if self.current_session_id:
+                session_cache.clear_session(self.current_session_id)
+                
+        except Exception as e:
+            error = ErrorHandler.handle_service_error(e, "socket_disconnection")
+            self.log_error(error, "handle_disconnect")
     
+    @log_performance
     def handle_start_transcription(self, *args, **kwargs):
-        """Handle start transcription request"""
-        print('Starting transcription...')
-        
-        # Clear frontend display
-        emit('clear_session')
-        
-        # Define callback functions for transcription service
-        def on_transcript(data):
-            if self.socketio:
-                self.socketio.emit('transcript', data)
+        """Handle start transcription request with enhanced error handling"""
+        try:
+            self.log_operation("start_transcription", session_id=self.current_session_id)
+            
+            # Clear frontend display
+            emit('clear_session')
+            
+            # Define enhanced callback functions for transcription service
+            def on_transcript(data):
+                try:
+                    # Add session context to transcript data
+                    enhanced_data = {
+                        **data,
+                        'session_id': self.current_session_id,
+                        'timestamp': time.time()
+                    }
+                    
+                    if self.socketio:
+                        self.socketio.emit('transcript', enhanced_data)
+                    else:
+                        emit('transcript', enhanced_data)
+                        
+                except Exception as e:
+                    self.logger.error(f"Error emitting transcript: {e}")
+            
+            def on_error(message):
+                try:
+                    error_data = {
+                        'message': message,
+                        'session_id': self.current_session_id,
+                        'timestamp': time.time(),
+                        'type': 'transcription_error'
+                    }
+                    
+                    if self.socketio:
+                        self.socketio.emit('error', error_data)
+                    else:
+                        emit('error', error_data)
+                        
+                except Exception as e:
+                    self.logger.error(f"Error emitting transcription error: {e}")
+            
+            def on_status(message):
+                try:
+                    status_data = {
+                        'message': message,
+                        'session_id': self.current_session_id,
+                        'timestamp': time.time()
+                    }
+                    
+                    if self.socketio:
+                        self.socketio.emit('status', status_data)
+                    else:
+                        emit('status', status_data)
+                        
+                except Exception as e:
+                    self.logger.error(f"Error emitting status: {e}")
+            
+            # Start transcription with enhanced callbacks
+            success = self.transcription_service.start_transcription(
+                on_transcript=on_transcript,
+                on_error=on_error,
+                on_status=on_status
+            )
+            
+            if not success:
+                emit('error', {
+                    'message': 'Failed to start transcription',
+                    'session_id': self.current_session_id,
+                    'timestamp': time.time(),
+                    'type': 'startup_error'
+                })
             else:
-                emit('transcript', data)
-        
-        def on_error(message):
-            if self.socketio:
-                self.socketio.emit('error', {'message': message})
-            else:
-                emit('error', {'message': message})
-        
-        def on_status(message):
-            if self.socketio:
-                self.socketio.emit('status', {'message': message})
-            else:
-                emit('status', {'message': message})
-        
-        # Start transcription
-        success = self.transcription_service.start_transcription(
-            on_transcript=on_transcript,
-            on_error=on_error,
-            on_status=on_status
-        )
-        
-        if not success:
-            emit('error', {'message': 'Failed to start transcription'})
+                self.logger.info(f"Transcription started successfully for session: {self.current_session_id}")
+                
+        except Exception as e:
+            error = ErrorHandler.handle_service_error(e, "start_transcription")
+            self.log_error(error, "handle_start_transcription")
+            emit('error', {
+                'message': f'Failed to start transcription: {error.message}',
+                'session_id': self.current_session_id,
+                'timestamp': time.time(),
+                'type': 'handler_error'
+            })
     
     def handle_audio_data(self, data):
-        """Handle incoming audio data"""
-        if 'audio' in data:
-            self.transcription_service.send_audio_data(data['audio'])
+        """Handle incoming audio data with validation"""
+        try:
+            # Validate audio data structure
+            if not isinstance(data, dict):
+                raise DataTransmissionError("Invalid audio data format - expected dictionary")
+            
+            if 'audio' not in data:
+                raise DataTransmissionError("Missing 'audio' field in data")
+            
+            # Send audio data to transcription service
+            success = self.transcription_service.send_audio_data(data['audio'])
+            
+            if not success:
+                self.logger.warning("Failed to process audio data chunk")
+                
+        except DataTransmissionError as e:
+            self.log_error(e, "handle_audio_data")
+            emit('error', {
+                'message': f'Audio data error: {e.message}',
+                'session_id': self.current_session_id,
+                'timestamp': time.time(),
+                'type': 'audio_data_error'
+            })
+        except Exception as e:
+            error = ErrorHandler.handle_service_error(e, "audio_processing")
+            self.log_error(error, "handle_audio_data")
+            emit('error', {
+                'message': 'Audio processing error',
+                'session_id': self.current_session_id,
+                'timestamp': time.time(),
+                'type': 'audio_processing_error'
+            })
     
+    @log_performance
     def handle_stop_transcription(self, *args, **kwargs):
-        """Handle stop transcription request"""
-        print('Stopping transcription...')
-        
-        # Stop transcription service
-        self.transcription_service.stop_transcription()
-        emit('status', {'message': 'Transcription stopped'})
-        
-        # Get the full transcript
-        full_transcript = self.transcription_service.get_full_transcript()
-        
-        # Analyze the conversation if we have transcript
-        if full_transcript.strip():
-            emit('status', {'message': 'Analyzing conversation with Claude...'})
-            print(f"Analyzing transcript: {full_transcript[:100]}...")
+        """Handle stop transcription request with analysis"""
+        try:
+            self.log_operation("stop_transcription", session_id=self.current_session_id)
             
-            try:
-                analysis = self.conversation_analyzer.analyze_conversation_with_sources(full_transcript)
-                self.conversation_analysis = analysis
+            # Stop transcription service
+            self.transcription_service.stop_transcription()
+            
+            # Get session statistics
+            session_stats = self.transcription_service.get_session_stats()
+            
+            emit('status', {
+                'message': 'Transcription stopped',
+                'session_id': self.current_session_id,
+                'timestamp': time.time(),
+                'stats': session_stats
+            })
+            
+            # Get the full transcript
+            full_transcript = self.transcription_service.get_full_transcript()
+            
+            # Analyze the conversation if we have transcript
+            if full_transcript.strip():
+                emit('status', {
+                    'message': 'Analyzing conversation with Claude...',
+                    'session_id': self.current_session_id,
+                    'timestamp': time.time()
+                })
                 
-                # Send analysis to frontend
-                if self.socketio:
-                    self.socketio.emit('conversation_analysis', analysis)
-                    self.socketio.emit('status', {'message': 'Analysis complete!'})
-                else:
-                    emit('conversation_analysis', analysis)
-                    emit('status', {'message': 'Analysis complete!'})
+                self.logger.info(f"Starting analysis for transcript length: {len(full_transcript)} chars")
                 
-                print('Analysis completed successfully')
-                
-            except Exception as e:
-                print(f"Error in analysis: {e}")
-                if self.socketio:
-                    self.socketio.emit('error', {'message': f'Analysis failed: {str(e)}'})
-                else:
-                    emit('error', {'message': f'Analysis failed: {str(e)}'})
-        else:
-            # Send minimal analysis for empty transcript
-            empty_analysis = self._create_empty_analysis()
-            if self.socketio:
-                self.socketio.emit('conversation_analysis', empty_analysis)
-                self.socketio.emit('status', {'message': 'No transcript to analyze'})
+                try:
+                    analysis = self.conversation_analyzer.analyze_conversation_with_sources(full_transcript)
+                    self.conversation_analysis = analysis
+                    
+                    # Add session context to analysis
+                    enhanced_analysis = {
+                        **analysis,
+                        'session_id': self.current_session_id,
+                        'analysis_timestamp': time.time(),
+                        'transcript_stats': session_stats
+                    }
+                    
+                    # Send analysis to frontend
+                    if self.socketio:
+                        self.socketio.emit('conversation_analysis', enhanced_analysis)
+                        self.socketio.emit('status', {
+                            'message': 'Analysis complete!',
+                            'session_id': self.current_session_id,
+                            'timestamp': time.time()
+                        })
+                    else:
+                        emit('conversation_analysis', enhanced_analysis)
+                        emit('status', {
+                            'message': 'Analysis complete!',
+                            'session_id': self.current_session_id,
+                            'timestamp': time.time()
+                        })
+                    
+                    self.logger.info('Analysis completed successfully')
+                    
+                except Exception as e:
+                    error = ErrorHandler.handle_service_error(e, "conversation_analysis")
+                    self.log_error(error, "handle_stop_transcription")
+                    
+                    error_data = {
+                        'message': f'Analysis failed: {error.message}',
+                        'session_id': self.current_session_id,
+                        'timestamp': time.time(),
+                        'type': 'analysis_error'
+                    }
+                    
+                    if self.socketio:
+                        self.socketio.emit('error', error_data)
+                    else:
+                        emit('error', error_data)
             else:
-                emit('conversation_analysis', empty_analysis)
-                emit('status', {'message': 'No transcript to analyze'})
+                # Send minimal analysis for empty transcript
+                empty_analysis = self._create_empty_analysis()
+                enhanced_empty_analysis = {
+                    **empty_analysis,
+                    'session_id': self.current_session_id,
+                    'analysis_timestamp': time.time(),
+                    'transcript_stats': session_stats
+                }
+                
+                if self.socketio:
+                    self.socketio.emit('conversation_analysis', enhanced_empty_analysis)
+                    self.socketio.emit('status', {
+                        'message': 'No transcript to analyze',
+                        'session_id': self.current_session_id,
+                        'timestamp': time.time()
+                    })
+                else:
+                    emit('conversation_analysis', enhanced_empty_analysis)
+                    emit('status', {
+                        'message': 'No transcript to analyze',
+                        'session_id': self.current_session_id,
+                        'timestamp': time.time()
+                    })
+                    
+        except Exception as e:
+            error = ErrorHandler.handle_service_error(e, "stop_transcription")
+            self.log_error(error, "handle_stop_transcription")
+            emit('error', {
+                'message': f'Error stopping transcription: {error.message}',
+                'session_id': self.current_session_id,
+                'timestamp': time.time(),
+                'type': 'stop_error'
+            })
     
+    @log_performance
     def handle_retry_analysis(self, *args, **kwargs):
-        """Handle retry analysis request"""
-        print('Retrying analysis...')
-        
-        # Get the full transcript
-        full_transcript = self.transcription_service.get_full_transcript()
-        
-        # Analyze the conversation if we have transcript
-        if full_transcript.strip():
-            emit('status', {'message': 'Retrying analysis with Claude...'})
-            print(f"Retrying analysis for transcript: {full_transcript[:100]}...")
+        """Handle retry analysis request with caching bypass"""
+        try:
+            self.log_operation("retry_analysis", session_id=self.current_session_id)
             
-            try:
-                analysis = self.conversation_analyzer.analyze_conversation_with_sources(full_transcript)
-                self.conversation_analysis = analysis
+            # Get the full transcript
+            full_transcript = self.transcription_service.get_full_transcript()
+            
+            # Analyze the conversation if we have transcript
+            if full_transcript.strip():
+                emit('status', {
+                    'message': 'Retrying analysis with Claude...',
+                    'session_id': self.current_session_id,
+                    'timestamp': time.time()
+                })
                 
-                # Send analysis to frontend
-                if self.socketio:
-                    self.socketio.emit('conversation_analysis', analysis)
-                    self.socketio.emit('status', {'message': 'Analysis complete!'})
-                else:
-                    emit('conversation_analysis', analysis)
-                    emit('status', {'message': 'Analysis complete!'})
+                self.logger.info(f"Retrying analysis for transcript length: {len(full_transcript)} chars")
                 
-                print('Retry analysis completed successfully')
-                
-            except Exception as e:
-                print(f"Error in retry analysis: {e}")
-                if self.socketio:
-                    self.socketio.emit('error', {'message': f'Retry analysis failed: {str(e)}'})
-                else:
-                    emit('error', {'message': f'Retry analysis failed: {str(e)}'})
-        else:
-            if self.socketio:
-                self.socketio.emit('status', {'message': 'No transcript available to analyze'})
+                try:
+                    # Clear cache for this transcript to force fresh analysis
+                    analysis_cache.invalidate_transcript(full_transcript, "enhanced")
+                    
+                    analysis = self.conversation_analyzer.analyze_conversation_with_sources(full_transcript)
+                    self.conversation_analysis = analysis
+                    
+                    # Add retry context to analysis
+                    enhanced_analysis = {
+                        **analysis,
+                        'session_id': self.current_session_id,
+                        'analysis_timestamp': time.time(),
+                        'is_retry': True
+                    }
+                    
+                    # Send analysis to frontend
+                    if self.socketio:
+                        self.socketio.emit('conversation_analysis', enhanced_analysis)
+                        self.socketio.emit('status', {
+                            'message': 'Retry analysis complete!',
+                            'session_id': self.current_session_id,
+                            'timestamp': time.time()
+                        })
+                    else:
+                        emit('conversation_analysis', enhanced_analysis)
+                        emit('status', {
+                            'message': 'Retry analysis complete!',
+                            'session_id': self.current_session_id,
+                            'timestamp': time.time()
+                        })
+                    
+                    self.logger.info('Retry analysis completed successfully')
+                    
+                except Exception as e:
+                    error = ErrorHandler.handle_service_error(e, "retry_analysis")
+                    self.log_error(error, "handle_retry_analysis")
+                    
+                    error_data = {
+                        'message': f'Retry analysis failed: {error.message}',
+                        'session_id': self.current_session_id,
+                        'timestamp': time.time(),
+                        'type': 'retry_analysis_error'
+                    }
+                    
+                    if self.socketio:
+                        self.socketio.emit('error', error_data)
+                    else:
+                        emit('error', error_data)
             else:
-                emit('status', {'message': 'No transcript available to analyze'})
+                status_data = {
+                    'message': 'No transcript available to analyze',
+                    'session_id': self.current_session_id,
+                    'timestamp': time.time()
+                }
+                
+                if self.socketio:
+                    self.socketio.emit('status', status_data)
+                else:
+                    emit('status', status_data)
+                    
+        except Exception as e:
+            error = ErrorHandler.handle_service_error(e, "retry_analysis")
+            self.log_error(error, "handle_retry_analysis")
+            emit('error', {
+                'message': f'Error in retry analysis: {error.message}',
+                'session_id': self.current_session_id,
+                'timestamp': time.time(),
+                'type': 'retry_handler_error'
+            })
     
+    def get_handler_stats(self):
+        """Get comprehensive statistics for all handlers and services"""
+        try:
+            transcription_stats = self.transcription_service.get_session_stats()
+            analyzer_stats = self.conversation_analyzer.get_analyzer_stats()
+            
+            return {
+                'session_id': self.current_session_id,
+                'session_start_time': self.session_start_time,
+                'transcription': transcription_stats,
+                'analyzer': analyzer_stats,
+                'current_analysis_available': self.conversation_analysis is not None
+            }
+        except Exception as e:
+            self.log_error(e, "get_handler_stats")
+            return {'error': f'Stats unavailable: {str(e)}'}
+    
+    def cleanup_session(self):
+        """Clean up session resources"""
+        try:
+            if self.current_session_id:
+                session_cache.clear_session(self.current_session_id)
+                self.logger.info(f"Cleaned up session: {self.current_session_id}")
+            
+            self.transcription_service.stop_transcription()
+            self.conversation_analysis = None
+            
+        except Exception as e:
+            self.log_error(e, "cleanup_session")
+
     def handle_test_analysis(self, *args, **kwargs):
         """Handle test analysis request with sample data"""
-        print('Testing analysis with sample data including source mapping...')
-        
-        # Create a sample analysis with source mapping to test the frontend
-        test_analysis = {
+        try:
+            self.log_operation("test_analysis", session_id=self.current_session_id)
+            self.logger.info('Testing analysis with sample data including source mapping...')
+            
+            # Create a sample analysis with source mapping to test the frontend
+            test_analysis = {
             "speaker_analysis": {
                 "doctor_segments": ["How can I help you today?", "I'll prescribe some medication"],
                 "patient_segments": ["I have a headache for 3 days", "Thank you doctor"],
@@ -235,12 +504,40 @@ class SocketHandlers:
             }
         }
         
-        if self.socketio:
-            self.socketio.emit('conversation_analysis', test_analysis)
-            self.socketio.emit('status', {'message': 'Test analysis with source mapping complete!'})
-        else:
-            emit('conversation_analysis', test_analysis)
-            emit('status', {'message': 'Test analysis with source mapping complete!'})
+            # Add session context to test analysis
+            enhanced_test_analysis = {
+                **test_analysis,
+                'session_id': self.current_session_id,
+                'analysis_timestamp': time.time(),
+                'is_test': True
+            }
+            
+            if self.socketio:
+                self.socketio.emit('conversation_analysis', enhanced_test_analysis)
+                self.socketio.emit('status', {
+                    'message': 'Test analysis with source mapping complete!',
+                    'session_id': self.current_session_id,
+                    'timestamp': time.time()
+                })
+            else:
+                emit('conversation_analysis', enhanced_test_analysis)
+                emit('status', {
+                    'message': 'Test analysis with source mapping complete!',
+                    'session_id': self.current_session_id,
+                    'timestamp': time.time()
+                })
+                
+            self.logger.info('Test analysis completed successfully')
+            
+        except Exception as e:
+            error = ErrorHandler.handle_service_error(e, "test_analysis")
+            self.log_error(error, "handle_test_analysis")
+            emit('error', {
+                'message': f'Test analysis failed: {error.message}',
+                'session_id': self.current_session_id,
+                'timestamp': time.time(),
+                'type': 'test_analysis_error'
+            })
     
     def _create_empty_analysis(self):
         """Create empty analysis for cases with no transcript"""

@@ -1,52 +1,95 @@
 import json
 import re
-from typing import Dict, Any, List
+import time
+from typing import Dict, Any, List, Optional
 import anthropic
-from config import ANTHROPIC_API_KEY
+from config import config
 from ..models.analysis_models import (
     TranscriptSegment, ConversationAnalysis, BasicConversationAnalysis,
     SpeakerAnalysis, ConversationSegment, SOAPComponent, SOAPNoteWithSources,
     AnalysisMetadata, BasicSOAPNote, SourceReference
 )
 from ..prompts import PromptManager
+from ..utils.logging_config import LoggingMixin, log_performance
+from ..utils.exceptions import (
+    AnthropicAPIError, JSONParsingError, InsufficientDataError,
+    ErrorHandler
+)
+from ..utils.cache import analysis_cache
 
 
-class ConversationAnalyzer:
+class ConversationAnalyzer(LoggingMixin):
     """Service class for analyzing doctor-patient conversations using Claude AI"""
     
     def __init__(self):
         """Initialize the conversation analyzer with Anthropic client"""
-        self.anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        # Validate API key
+        if not config.api.anthropic_api_key or config.api.anthropic_api_key == 'REPLACE_WITH_YOUR_ANTHROPIC_API_KEY_HERE':
+            raise AnthropicAPIError("Anthropic API key not configured")
+        
+        self.anthropic_client = anthropic.Anthropic(
+            api_key=config.api.anthropic_api_key,
+            timeout=config.ai.timeout_seconds
+        )
+        self.analysis_count = 0
     
+    @log_performance
     def analyze_conversation(self, transcript_text: str) -> Dict[str, Any]:
         """Analyze doctor-patient conversation and generate basic SOAP note using Claude"""
         try:
-            # Check if transcript is too small
-            if len(transcript_text.strip()) < 10:
-                return self._create_empty_analysis("Transcript too short for analysis")
+            self.log_operation("analyze_conversation_basic")
+            
+            # Validate transcript
+            ErrorHandler.validate_transcript_length(transcript_text, min_length=10)
+            
+            # Check cache first
+            cached_result = analysis_cache.get_analysis(transcript_text, "basic")
+            if cached_result:
+                self.logger.info("Returning cached basic analysis")
+                return cached_result
             
             prompt = PromptManager.get_basic_analysis_prompt(transcript_text)
             
             message = self.anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=1500,
-                temperature=0.1,
+                model=config.ai.model,
+                max_tokens=config.ai.max_tokens,
+                temperature=config.ai.temperature,
                 messages=[{"role": "user", "content": prompt}]
             )
             
             response_text = message.content[0].text
-            return self._parse_json_response(response_text)
+            result = self._parse_json_response(response_text)
             
+            # Cache successful result
+            if "error" not in result:
+                analysis_cache.cache_analysis(transcript_text, result, "basic")
+                self.logger.info("Cached basic analysis result")
+            
+            self.analysis_count += 1
+            return result
+            
+        except InsufficientDataError as e:
+            self.log_error(e, "analyze_conversation_basic")
+            return self._create_empty_analysis(e.message)
         except Exception as e:
-            print(f"Error analyzing conversation: {e}")
-            return {"error": f"Analysis failed: {str(e)}"}
+            error = ErrorHandler.handle_api_error(e, "Anthropic")
+            self.log_error(error, "analyze_conversation_basic")
+            return {"error": f"Analysis failed: {error.message}"}
     
+    @log_performance
     def analyze_conversation_with_sources(self, transcript_text: str) -> Dict[str, Any]:
         """Enhanced analysis that maps each SOAP component to its source transcript excerpts"""
         try:
-            # Check if transcript is too small
-            if len(transcript_text.strip()) < 10:
-                return self._create_empty_enhanced_analysis("Transcript too short for analysis")
+            self.log_operation("analyze_conversation_enhanced")
+            
+            # Validate transcript
+            ErrorHandler.validate_transcript_length(transcript_text, min_length=10)
+            
+            # Check cache first
+            cached_result = analysis_cache.get_analysis(transcript_text, "enhanced")
+            if cached_result:
+                self.logger.info("Returning cached enhanced analysis")
+                return cached_result
             
             # Split transcript into numbered segments for easier reference
             transcript_segments = self._create_transcript_segments(transcript_text)
@@ -54,9 +97,9 @@ class ConversationAnalyzer:
             prompt = PromptManager.get_enhanced_analysis_prompt(transcript_text, transcript_segments)
             
             message = self.anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=2500,
-                temperature=0.1,
+                model=config.ai.model,
+                max_tokens=config.ai.max_tokens,
+                temperature=config.ai.temperature,
                 messages=[{"role": "user", "content": prompt}]
             )
             
@@ -67,21 +110,43 @@ class ConversationAnalyzer:
                 analysis = self._parse_enhanced_json_response(response_text)
                 # Add the original transcript segments for reference
                 analysis['transcript_segments'] = transcript_segments
-                print(f"Successfully parsed enhanced analysis with sources")
+                
+                # Cache successful result
+                analysis_cache.cache_analysis(transcript_text, analysis, "enhanced")
+                self.logger.info("Successfully parsed and cached enhanced analysis with sources")
+                
+                self.analysis_count += 1
                 return analysis
                 
-            except Exception as e:
-                print(f"Error parsing enhanced analysis: {e}")
+            except JSONParsingError as e:
+                self.logger.warning(f"Enhanced analysis parsing failed, falling back to basic: {e}")
                 # Fallback to original analysis and convert to enhanced format
                 original_analysis = self.analyze_conversation(transcript_text)
                 return self._convert_to_enhanced_format(original_analysis, transcript_segments)
                 
+        except InsufficientDataError as e:
+            self.log_error(e, "analyze_conversation_enhanced")
+            return self._create_empty_enhanced_analysis(e.message)
         except Exception as e:
-            print(f"Error in enhanced analysis: {e}")
-            # Fallback to original analysis and convert to enhanced format
-            original_analysis = self.analyze_conversation(transcript_text)
-            transcript_segments = self._create_transcript_segments(transcript_text)
-            return self._convert_to_enhanced_format(original_analysis, transcript_segments)
+            error = ErrorHandler.handle_api_error(e, "Anthropic")
+            self.log_error(error, "analyze_conversation_enhanced")
+            
+            # Fallback to basic analysis
+            try:
+                self.logger.info("Attempting fallback to basic analysis")
+                original_analysis = self.analyze_conversation(transcript_text)
+                transcript_segments = self._create_transcript_segments(transcript_text)
+                return self._convert_to_enhanced_format(original_analysis, transcript_segments)
+            except Exception as fallback_error:
+                self.log_error(fallback_error, "analyze_conversation_enhanced_fallback")
+                return self._create_empty_enhanced_analysis(f"Analysis failed: {error.message}")
+    
+    def get_analyzer_stats(self) -> Dict[str, Any]:
+        """Get statistics for the analyzer"""
+        return {
+            'total_analyses': self.analysis_count,
+            'cache_stats': analysis_cache.stats()
+        }
     
     def _create_transcript_segments(self, transcript_text: str) -> List[Dict[str, Any]]:
         """Split transcript into numbered segments for easier reference"""

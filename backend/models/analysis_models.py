@@ -1,22 +1,78 @@
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+from datetime import datetime
+import json
 
 
 @dataclass
 class ConversationSegment:
-    """Represents a segment of conversation"""
+    """Represents a segment of conversation with validation"""
     type: str
     content: str
     speaker: str
+    timestamp: Optional[float] = None
+    confidence: Optional[float] = None
+    
+    def __post_init__(self):
+        """Validate segment data"""
+        if not self.content or not self.content.strip():
+            raise ValueError("Content cannot be empty")
+        
+        if self.speaker not in ['doctor', 'patient', 'unknown']:
+            self.speaker = 'unknown'
+        
+        if self.confidence is not None and not (0.0 <= self.confidence <= 1.0):
+            raise ValueError("Confidence must be between 0.0 and 1.0")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            'type': self.type,
+            'content': self.content,
+            'speaker': self.speaker,
+            'timestamp': self.timestamp,
+            'confidence': self.confidence
+        }
 
 
 @dataclass
 class SpeakerAnalysis:
-    """Analysis of speaker distribution in conversation"""
+    """Analysis of speaker distribution in conversation with validation"""
     doctor_segments: List[str] = field(default_factory=list)
     patient_segments: List[str] = field(default_factory=list)
     doctor_percentage: float = 0.0
     patient_percentage: float = 0.0
+    total_segments: int = 0
+    
+    def __post_init__(self):
+        """Validate and calculate speaker analysis"""
+        # Ensure percentages are valid
+        if not (0.0 <= self.doctor_percentage <= 100.0):
+            raise ValueError("Doctor percentage must be between 0 and 100")
+        if not (0.0 <= self.patient_percentage <= 100.0):
+            raise ValueError("Patient percentage must be between 0 and 100")
+        
+        # Calculate total segments if not provided
+        if self.total_segments == 0:
+            self.total_segments = len(self.doctor_segments) + len(self.patient_segments)
+        
+        # Ensure percentages add up to approximately 100%
+        total_percentage = self.doctor_percentage + self.patient_percentage
+        if self.total_segments > 0 and abs(total_percentage - 100.0) > 1.0:
+            # Normalize percentages
+            if total_percentage > 0:
+                self.doctor_percentage = (self.doctor_percentage / total_percentage) * 100.0
+                self.patient_percentage = (self.patient_percentage / total_percentage) * 100.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            'doctor_segments': self.doctor_segments,
+            'patient_segments': self.patient_segments,
+            'doctor_percentage': round(self.doctor_percentage, 2),
+            'patient_percentage': round(self.patient_percentage, 2),
+            'total_segments': self.total_segments
+        }
 
 
 @dataclass
@@ -30,10 +86,39 @@ class TranscriptSegment:
 
 @dataclass
 class SourceReference:
-    """Reference to source segments that support a SOAP component"""
+    """Reference to source segments that support a SOAP component with validation"""
     segment_ids: List[int]
     excerpt: str
     reasoning: str
+    confidence_score: Optional[float] = None
+    
+    def __post_init__(self):
+        """Validate source reference data"""
+        if not self.segment_ids:
+            raise ValueError("At least one segment ID is required")
+        
+        if not self.excerpt or not self.excerpt.strip():
+            raise ValueError("Excerpt cannot be empty")
+        
+        if not self.reasoning or not self.reasoning.strip():
+            raise ValueError("Reasoning cannot be empty")
+        
+        if self.confidence_score is not None and not (0.0 <= self.confidence_score <= 1.0):
+            raise ValueError("Confidence score must be between 0.0 and 1.0")
+        
+        # Ensure all segment IDs are positive integers
+        for segment_id in self.segment_ids:
+            if not isinstance(segment_id, int) or segment_id <= 0:
+                raise ValueError("All segment IDs must be positive integers")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            'segment_ids': self.segment_ids,
+            'excerpt': self.excerpt,
+            'reasoning': self.reasoning,
+            'confidence_score': self.confidence_score
+        }
 
 
 @dataclass

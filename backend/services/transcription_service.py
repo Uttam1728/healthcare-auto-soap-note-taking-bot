@@ -1,11 +1,18 @@
 import base64
-from typing import Optional, Callable, Any
+import uuid
+import time
+from typing import Optional, Callable, Any, Dict
 from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEvents
 from deepgram.clients.live.v1 import LiveOptions
-from config import DEEPGRAM_API_KEY
+from config import config
+from ..utils.logging_config import LoggingMixin, log_performance
+from ..utils.exceptions import (
+    DeepgramConnectionError, AudioProcessingError, TranscriptionTimeoutError,
+    ErrorHandler
+)
 
 
-class TranscriptionService:
+class TranscriptionService(LoggingMixin):
     """Service class for handling live transcription using Deepgram"""
     
     def __init__(self):
@@ -13,101 +20,166 @@ class TranscriptionService:
         self.deepgram_connection = None
         self.current_session_id = None
         self.full_transcript = ""
+        self.session_start_time = None
+        self.connection_retries = 0
+        self.max_retries = 3
+        self.is_connected = False
+        self.audio_chunks_processed = 0
         
+        # Validate API key on initialization
+        if not config.api.deepgram_api_key or config.api.deepgram_api_key == 'REPLACE_WITH_YOUR_DEEPGRAM_API_KEY_HERE':
+            raise DeepgramConnectionError("Deepgram API key not configured")
+        
+    @log_performance
     def start_transcription(self, 
                           on_transcript: Callable[[dict], None],
                           on_error: Callable[[str], None],
                           on_status: Callable[[str], None]) -> bool:
-        """Start live transcription session"""
+        """Start live transcription session with enhanced error handling"""
         try:
+            self.log_operation("start_transcription")
+            
             # Clean up previous session
             self.stop_transcription()
             
-            # Reset transcript for new session
+            # Reset session state
             self.full_transcript = ""
-            
-            # Generate new session ID
-            import uuid
             self.current_session_id = str(uuid.uuid4())
+            self.session_start_time = time.time()
+            self.connection_retries = 0
+            self.audio_chunks_processed = 0
             
-            # Initialize Deepgram client
-            config = DeepgramClientOptions(options={"keepalive": "true"})
-            deepgram = DeepgramClient(DEEPGRAM_API_KEY, config)
+            # Initialize Deepgram client with enhanced configuration
+            client_config = DeepgramClientOptions(
+                options={
+                    "keepalive": "true",
+                    "timeout": config.ai.timeout_seconds
+                }
+            )
+            deepgram = DeepgramClient(config.api.deepgram_api_key, client_config)
             
             # Create connection
             self.deepgram_connection = deepgram.listen.live.v("1")
             
             # Configure live transcription options (optimized for medical accuracy)
             options = LiveOptions(
-                model="nova-2",  # Best model for medical terminology
-                language="en-US",
-                smart_format=True,
-                encoding="linear16",
+                model=config.transcription.model,
+                language=config.transcription.language,
+                smart_format=config.transcription.enable_smart_format,
+                encoding=config.transcription.encoding,
                 channels=1,
-                sample_rate=16000,
+                sample_rate=config.transcription.sample_rate,
                 interim_results=True,
-                utterance_end_ms="2000",  # Longer for medical conversations
+                utterance_end_ms=config.transcription.utterance_end_ms,
                 vad_events=True,
-                punctuate=True,
-                profanity_filter=False,  # Important for medical terms
-                redact=False,  # Don't redact medical information
-                diarize=True,  # Enable speaker separation
-                numerals=True,  # Important for medical measurements
-                endpointing=800,  # More patient for medical terminology
-                filler_words=False,  # Remove "um", "uh" for cleaner notes
+                punctuate=config.transcription.enable_punctuation,
+                profanity_filter=config.transcription.profanity_filter,
+                redact=config.transcription.redact_pii,
+                diarize=config.transcription.enable_diarization,
+                numerals=config.transcription.enable_numerals,
+                endpointing=config.transcription.endpointing,
+                filler_words=False,
                 multichannel=False,
-                keywords=[
-                    "patient", "doctor", "symptoms", "diagnosis", "treatment", 
-                    "medication", "prescription", "mg", "ml", "blood pressure", 
-                    "temperature", "pain", "history", "allergies", "surgery", 
-                    "chronic", "acute"
-                ]  # Medical keywords boost
+                keywords=config.transcription.medical_keywords
             )
             
             # Set up event handlers
             self._setup_event_handlers(on_transcript, on_error, on_status)
             
-            # Start the connection
-            if self.deepgram_connection.start(options) is False:
-                on_error("Failed to connect to Deepgram")
+            # Start the connection with retry logic
+            if not self._start_connection_with_retry(options, on_error):
                 return False
             
-            on_status("Transcription started")
-            print('Deepgram connection established')
+            self.is_connected = True
+            on_status("Transcription started successfully")
+            self.logger.info(f"Transcription session started: {self.current_session_id}")
             return True
             
         except Exception as e:
-            print(f"Error starting transcription: {e}")
-            on_error(f"Error starting transcription: {str(e)}")
+            error = ErrorHandler.handle_service_error(e, "transcription")
+            self.log_error(error, "start_transcription")
+            on_error(f"Failed to start transcription: {error.message}")
             return False
     
+    def _start_connection_with_retry(self, options, on_error) -> bool:
+        """Start connection with retry logic"""
+        for attempt in range(self.max_retries):
+            try:
+                if self.deepgram_connection.start(options) is not False:
+                    return True
+                
+                self.connection_retries += 1
+                if attempt < self.max_retries - 1:
+                    self.logger.warning(f"Connection attempt {attempt + 1} failed, retrying...")
+                    time.sleep(1 * (attempt + 1))  # Exponential backoff
+                
+            except Exception as e:
+                self.logger.error(f"Connection attempt {attempt + 1} error: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(1 * (attempt + 1))
+        
+        on_error("Failed to establish Deepgram connection after multiple attempts")
+        return False
+    
     def stop_transcription(self) -> None:
-        """Stop the current transcription session"""
+        """Stop the current transcription session with proper cleanup"""
         if self.deepgram_connection:
             try:
+                self.logger.info(f"Stopping transcription session: {self.current_session_id}")
                 self.deepgram_connection.finish()
+                
+                # Log session statistics
+                if self.session_start_time:
+                    session_duration = time.time() - self.session_start_time
+                    self.logger.info(
+                        f"Session completed - Duration: {session_duration:.2f}s, "
+                        f"Audio chunks: {self.audio_chunks_processed}, "
+                        f"Transcript length: {len(self.full_transcript)}"
+                    )
+                
             except Exception as e:
-                print(f"Error stopping transcription: {e}")
+                error = ErrorHandler.handle_service_error(e, "transcription_stop")
+                self.log_error(error, "stop_transcription")
             finally:
                 self.deepgram_connection = None
+                self.is_connected = False
     
     def send_audio_data(self, audio_data: str) -> bool:
-        """Send audio data to Deepgram for transcription"""
-        if not self.deepgram_connection:
+        """Send audio data to Deepgram for transcription with validation"""
+        if not self.deepgram_connection or not self.is_connected:
+            self.logger.warning("Attempted to send audio data without active connection")
             return False
             
         try:
+            # Validate audio data
+            if not audio_data or not isinstance(audio_data, str):
+                raise AudioProcessingError("Invalid audio data format")
+            
             # Decode base64 audio data
             decoded_audio = base64.b64decode(audio_data)
             
-            # Send audio data to Deepgram if we have data
-            if len(decoded_audio) > 0:
-                self.deepgram_connection.send(decoded_audio)
-                return True
-            return False
+            # Validate decoded audio
+            if len(decoded_audio) == 0:
+                self.logger.debug("Received empty audio chunk, skipping")
+                return False
             
+            # Send audio data to Deepgram
+            self.deepgram_connection.send(decoded_audio)
+            self.audio_chunks_processed += 1
+            
+            # Log progress periodically
+            if self.audio_chunks_processed % 100 == 0:
+                self.logger.debug(f"Processed {self.audio_chunks_processed} audio chunks")
+            
+            return True
+            
+        except base64.binascii.Error as e:
+            error = AudioProcessingError(f"Base64 decoding failed: {str(e)}")
+            self.log_error(error, "send_audio_data")
+            return False
         except Exception as e:
-            print(f"Error processing audio data: {e}")
+            error = ErrorHandler.handle_service_error(e, "audio_processing")
+            self.log_error(error, "send_audio_data")
             return False
     
     def get_full_transcript(self) -> str:
@@ -117,6 +189,21 @@ class TranscriptionService:
     def get_session_id(self) -> Optional[str]:
         """Get the current session ID"""
         return self.current_session_id
+    
+    def get_session_stats(self) -> Dict[str, Any]:
+        """Get statistics for the current session"""
+        stats = {
+            'session_id': self.current_session_id,
+            'is_connected': self.is_connected,
+            'audio_chunks_processed': self.audio_chunks_processed,
+            'transcript_length': len(self.full_transcript),
+            'connection_retries': self.connection_retries
+        }
+        
+        if self.session_start_time:
+            stats['session_duration'] = time.time() - self.session_start_time
+        
+        return stats
     
     def _setup_event_handlers(self, 
                             on_transcript: Callable[[dict], None],

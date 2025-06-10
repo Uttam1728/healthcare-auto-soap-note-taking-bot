@@ -1,5 +1,26 @@
+# Core web framework
 flask==2.3.3
 flask-socketio==5.3.6
+
+# External APIs
 deepgram-sdk==3.2.7
+anthropic==0.40.0
+
+# Configuration and environment
 python-dotenv==1.0.0
-anthropic==0.40.0 
+
+# Essential utilities
+structlog>=23.2.0  # For structured logging
+psutil>=5.9.6  # For system monitoring
+
+# Type hints for Python compatibility
+typing-extensions>=4.9.0
+
+# Optional: Development and testing (install separately if needed)
+# pytest>=7.4.3
+# pytest-asyncio>=0.21.1  
+# pytest-cov>=4.1.0
+# black>=23.11.0
+# flake8>=6.1.0
+# mypy>=1.7.1
+# pydantic>=2.8.0  # For advanced validation (may have build issues on Python 3.13) 
